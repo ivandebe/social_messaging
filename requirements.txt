@@ -1,0 +1,11 @@
+huggingface_hub==1.15.0
+matplotlib==3.10.9
+numpy==2.4.5
+pandas==3.0.3
+plotly==5.24.1
+seaborn==0.13.2
+streamlit==1.57.0
+torch==2.12.0
+transformers==5.8.1
+vaderSentiment==3.3.2
+wordcloud==1.9.3
