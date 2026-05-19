@@ -8,7 +8,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 
 DEFAULT_INPUT_FILE = "group_chat_merged_consecutive.csv"
-DEFAULT_OUTPUT_SUBFOLDER = "sentiment"
+DEFAULT_OUTPUT_FILENAME = "sentiment_analysis_results_consecutive.csv"
 
 
 def apply_vader_sentiment(data: pd.DataFrame, text_column: str = "message") -> pd.DataFrame:
@@ -24,6 +24,82 @@ def apply_vader_sentiment(data: pd.DataFrame, text_column: str = "message") -> p
     sentiment_scores.columns = [f"vader_{col}" for col in sentiment_scores.columns]
     
     return pd.concat([data.reset_index(drop=True), sentiment_scores.reset_index(drop=True)], axis=1)
+
+
+def apply_twitter_roberta_sentiment(data: pd.DataFrame, text_column: str = "message", batch_size: int = 32) -> pd.DataFrame:
+    """Apply Twitter-RoBERTa sentiment analysis to messages using batch processing."""
+    data = data.copy()
+    data[text_column] = data[text_column].fillna("")
+    
+    classifier = pipeline(
+        "text-classification",
+        model="cardiffnlp/twitter-roberta-base-sentiment-latest",
+        return_all_scores=True,
+        truncation=True,
+        device=-1,  # Use CPU; change to 0 for GPU
+    )
+    
+    def normalize_text(text):
+        """Truncate text to a reasonable length for the model."""
+        if not isinstance(text, str) or len(text.strip()) == 0:
+            return ""
+        # Truncate to ~500 chars to stay within token limits
+        return text[:500]
+    
+    # Normalize all texts first
+    texts = data[text_column].apply(normalize_text).tolist()
+    
+    # Process in batches for efficiency
+    sentiment_scores_list = []
+    total = len(texts)
+    
+    for i in range(0, total, batch_size):
+        batch_end = min(i + batch_size, total)
+        batch = texts[i:batch_end]
+        
+        # Filter out empty strings for processing
+        batch_with_idx = [(idx, text) for idx, text in enumerate(range(i, batch_end)) if texts[idx]]
+        
+        if not batch_with_idx:
+            for _ in range(batch_end - i):
+                sentiment_scores_list.append({})
+            continue
+        
+        batch_texts = [texts[idx] for idx, _ in batch_with_idx]
+        
+        try:
+            # Classify the batch
+            results = classifier(batch_texts)
+            
+            # Process results
+            result_idx = 0
+            for batch_idx in range(batch_end - i):
+                original_idx = i + batch_idx
+                
+                if original_idx in [idx for idx, _ in batch_with_idx]:
+                    if isinstance(results[result_idx], list):
+                        # Format: list of dicts with 'label' and 'score'
+                        scores = {item["label"]: item["score"] for item in results[result_idx]}
+                    else:
+                        # Single result
+                        scores = {results[result_idx]["label"]: results[result_idx]["score"]}
+                    sentiment_scores_list.append(scores)
+                    result_idx += 1
+                else:
+                    sentiment_scores_list.append({})
+        except Exception as e:
+            print(f"Error processing batch {i}-{batch_end}: {e}")
+            for _ in range(batch_end - i):
+                sentiment_scores_list.append({})
+        
+        if (i + batch_size) % (batch_size * 10) == 0:
+            print(f"  Processed {min(i + batch_size, total)}/{total} messages")
+    
+    # Convert list of dicts to DataFrame
+    sentiment_df = pd.DataFrame(sentiment_scores_list).fillna(0.0)
+    sentiment_df.columns = [f"twitter_roberta_{col}" for col in sentiment_df.columns]
+    
+    return pd.concat([data.reset_index(drop=True), sentiment_df.reset_index(drop=True)], axis=1)
 
 
 def apply_huggingface_emotion(data: pd.DataFrame, text_column: str = "message", batch_size: int = 32) -> pd.DataFrame:
@@ -148,10 +224,10 @@ def main() -> None:
         help="Directory containing the input CSV. Defaults to output_data/prep_logs/",
     )
     parser.add_argument(
-        "--output-subfolder",
+        "--output-filename",
         type=str,
-        default=DEFAULT_OUTPUT_SUBFOLDER,
-        help="Subfolder under output_data where results will be saved.",
+        default=DEFAULT_OUTPUT_FILENAME,
+        help="Name of the output CSV file.",
     )
     parser.add_argument(
         "--skip-vader",
@@ -163,11 +239,16 @@ def main() -> None:
         action="store_true",
         help="Skip Hugging Face emotion classification.",
     )
+    parser.add_argument(
+        "--skip-twitter-roberta",
+        action="store_true",
+        help="Skip Twitter-RoBERTa sentiment classification.",
+    )
     args = parser.parse_args()
     
     root = Path(__file__).resolve().parents[1]
     input_dir = args.input_dir or (root / "output_data" / "prep_logs")
-    output_dir = ensure_output_dir(root / "output_data" / args.output_subfolder)
+    output_dir = ensure_output_dir(root / "output_data" / "sentiment")
     
     input_file = find_input_file(args.input_file, input_dir)
     
@@ -185,7 +266,12 @@ def main() -> None:
         data = apply_huggingface_emotion(data, text_column="message")
         print("Hugging Face analysis complete.")
     
-    output_path = save_dataframe(data, output_dir, "sentiment_analysis_results.csv")
+    if not args.skip_twitter_roberta:
+        print("Applying Twitter-RoBERTa sentiment classification (this may take a while)...")
+        data = apply_twitter_roberta_sentiment(data, text_column="message")
+        print("Twitter-RoBERTa analysis complete.")
+    
+    output_path = save_dataframe(data, output_dir, DEFAULT_OUTPUT_FILENAME)
     print(f"Saved combined results to: {output_path}")
 
 

@@ -11,6 +11,7 @@ from datetime import timedelta
 # Add utils to path
 # sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from utils.messages_dual_radial_bars import create_messages_dual_radial_bars
+from utils.sentiment_heatmap import plot_sentiment_heatmap
 
 # TODO need to check the chunk dataset and the dates format as well
 
@@ -26,6 +27,21 @@ def upload_history_chat() -> pd.DataFrame:
         if "chunk" in chat_df.columns:
             chat_df = chat_df.rename(columns={"chunk": "message"})
         return chat_df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data
+def upload_sentiment_results() -> pd.DataFrame:
+    csv_path = Path(__file__).parent.parent / "output_data" / "sentiment" / "sentiment_analysis_results_consecutive.csv"
+    try:
+        sentiment_df = pd.read_csv(csv_path)
+        sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+        if "sender" in sentiment_df.columns:
+            sentiment_df["sender"] = sentiment_df["sender"].replace(sender_rename)
+        if "twitter_roberta_positive" in sentiment_df.columns:
+            sentiment_df["twitter_roberta_compound"] = sentiment_df["twitter_roberta_positive"]-sentiment_df["twitter_roberta_negative"]
+        return sentiment_df
     except Exception:
         return pd.DataFrame()
 
@@ -47,8 +63,12 @@ def main():
     st.title("Group Chat Analysis tool")
 
     chat_df = upload_history_chat()
+    sentiment_df = upload_sentiment_results()
+
     if not chat_df.empty:
         chat_df = _parse_date_column(chat_df)
+    if not sentiment_df.empty:
+        sentiment_df = _parse_date_column(sentiment_df)
 
     selected_senders = []
     selected_date_range = None
@@ -64,12 +84,14 @@ def main():
 
         choice = st.radio("Select view", ("Explore chat history", "Topic Analysis", "Sentiment analysis", "Mental health analysis"))
 
-        if chat_df.empty:
-            st.error("Could not load `group_chat_merged_consecutive.csv`. Please check `output_data/prep_logs`.")
+        if chat_df.empty and sentiment_df.empty:
+            st.error("Could not load chat history or sentiment results. Please check `output_data/prep_logs` and `output_data/sentiment`.")
         else:
-            if "date" in chat_df.columns:
-                min_date = chat_df["date"].dropna().min()
-                max_date = chat_df["date"].dropna().max()
+            df_for_filters = chat_df if not chat_df.empty else sentiment_df
+
+            if "date" in df_for_filters.columns:
+                min_date = df_for_filters["date"].dropna().min()
+                max_date = df_for_filters["date"].dropna().max()
                 if pd.notna(min_date) and pd.notna(max_date):
                     # Convert to date objects if needed
                     min_date_obj = min_date.date() if hasattr(min_date, "date") else min_date
@@ -101,18 +123,18 @@ def main():
                             format="DD/MM/YYYY",
                         )
                 else:
-                    st.warning("The loaded chat history does not contain a valid date range.")
+                    st.warning("The loaded data does not contain a valid date range.")
             else:
-                st.warning("No `date` column found in chat history.")
+                st.warning("No `date` column found in the available data.")
 
-            if "sender" in chat_df.columns:
-                unique_senders = sorted(chat_df["sender"].dropna().astype(str).unique())
+            if "sender" in df_for_filters.columns:
+                unique_senders = sorted(df_for_filters["sender"].dropna().astype(str).unique())
                 if unique_senders:
                     selected_senders = st.multiselect("Select senders", unique_senders, default=unique_senders)
                 else:
-                    st.warning("No senders found in chat history.")
+                    st.warning("No senders found in the available data.")
             else:
-                st.warning("No `sender` column found in chat history.")
+                st.warning("No `sender` column found in the available data.")
 
     # Main content - empty placeholders
     if choice == "Explore chat history":
@@ -274,7 +296,161 @@ def main():
                         st.write(counts)
     elif choice == "Sentiment analysis":
         st.header("Sentiment analysis")
-        st.write("Placeholder for sentiment analysis charts and controls.")
+        sentiment_source = st.selectbox(
+            "Sentiment source",
+            ["VADER", "Twitter-RoBERTa"],
+            index=0,
+            help="Choose which sentiment analysis source to use for both the compound trend chart and the heatmap."
+        )
+
+        source_columns = {
+            "VADER": {
+                "pos": "vader_pos",
+                "neg": "vader_neg",
+                "neu": "vader_neu",
+                "compound": "vader_compound",
+            },
+            "Twitter-RoBERTa": {
+                "pos": "twitter_roberta_positive",
+                "neg": "twitter_roberta_negative",
+                "neu": "twitter_roberta_neutral",
+                "compound": "twitter_roberta_compound",
+            },
+        }
+        selected_cols = source_columns[sentiment_source]
+
+        if sentiment_source == "VADER":
+            st.markdown(
+                "**VADER** is a rule-based lexicon and sentiment scoring system designed for social media text. "
+                "It uses a dictionary of sentiment-laden words and heuristics for punctuation, capitalization, degree modifiers, and negation. "
+                "VADER returns positive, negative, neutral scores, plus a normalized `compound` score in the range [-1, 1]. "
+                "A compound score near +1 means strongly positive sentiment, near -1 means strongly negative sentiment, and near 0 means neutral or mixed sentiment."
+            )
+        else:
+            st.markdown(
+                "**Twitter-RoBERTa** is a transformer-based model fine-tuned on Twitter sentiment data. "
+                "It outputs probability-like scores for positive, negative, and neutral sentiment. "
+                "The derived `twitter_roberta_compound` score is calculated as `positive - negative`, so positive values indicate more positive polarity and negative values indicate more negative polarity. "
+                "Because RoBERTa scores are probabilities, the resulting net values can be sparse and the heatmap may appear flat if most predictions are neutral."
+            )
+
+        st.markdown(
+            "A **rolling mean** smooths the compound score over a moving window of days or weeks. "
+            "This makes the trend easier to read by reducing short-term spikes and noise while preserving the overall sentiment direction."
+        )
+
+        if sentiment_df.empty:
+            st.error("Could not load sentiment analysis results from `output_data/sentiment/sentiment_analysis_results_consecutive.csv`.")
+        else:
+            filtered_sentiment = sentiment_df.copy()
+            if selected_senders:
+                filtered_sentiment = filtered_sentiment[filtered_sentiment["sender"].isin(selected_senders)]
+
+            if selected_date_range is not None and len(selected_date_range) == 2 and "date" in filtered_sentiment.columns:
+                start_date, end_date = selected_date_range
+                filtered_sentiment = filtered_sentiment[
+                    (filtered_sentiment["date"] >= pd.to_datetime(start_date)) &
+                    (filtered_sentiment["date"] <= pd.to_datetime(end_date))
+                ]
+
+            missing_cols = [col for col in selected_cols.values() if col not in filtered_sentiment.columns]
+            if missing_cols:
+                st.warning(
+                    f"The selected source '{sentiment_source}' is not available in the loaded sentiment data. Missing columns: {', '.join(missing_cols)}."
+                )
+            else:
+                compound_col = selected_cols["compound"]
+                filtered_sentiment = filtered_sentiment.dropna(subset=["date", compound_col]).sort_values("date")
+
+                if filtered_sentiment.empty:
+                    st.warning("No sentiment data available after applying the selected filters.")
+                else:
+                    agg_freq = st.selectbox("Aggregation frequency", ["Daily", "Weekly"], index=0)
+                    smoothing_window = st.slider(
+                        "Rolling average window",
+                        min_value=1,
+                        max_value=21,
+                        value=7,
+                        help="Smoothing window for the compiled mean compound sentiment time series.",
+                    )
+
+                    resample_rule = "D" if agg_freq == "Daily" else "W-MON"
+                    grouped = (
+                        filtered_sentiment.set_index("date")
+                        .groupby("sender")[compound_col]
+                        .resample(resample_rule)
+                        .mean()
+                        .rename("mean_compound")
+                        .reset_index()
+                    )
+
+                    grouped["rolling_mean"] = grouped.groupby("sender")["mean_compound"].transform(
+                        lambda x: x.rolling(window=smoothing_window, min_periods=1).mean()
+                    )
+
+                    sender_count = grouped["sender"].nunique()
+                    chart_title = f"{agg_freq} mean {sentiment_source} compound sentiment (smoothed over {smoothing_window})"
+                    if sender_count <= 6:
+                        fig_sentiment = px.line(
+                            grouped,
+                            x="date",
+                            y="rolling_mean",
+                            color="sender",
+                            title=chart_title,
+                            labels={"rolling_mean": "Smoothed compound score", "date": "Date"},
+                            markers=True,
+                        )
+                        fig_sentiment.update_layout(hovermode="x unified", height=450)
+                    else:
+                        fig_sentiment = px.line(
+                            grouped,
+                            x="date",
+                            y="rolling_mean",
+                            color="sender",
+                            facet_col="sender",
+                            facet_col_wrap=2,
+                            title=chart_title,
+                            labels={"rolling_mean": "Smoothed compound score", "date": "Date"},
+                        )
+                        fig_sentiment.update_layout(height=320 * ((sender_count + 1) // 2), showlegend=False)
+
+                    st.plotly_chart(fig_sentiment, use_container_width=True)
+
+                    st.subheader("Sentiment heatmap")
+                    if "time" not in filtered_sentiment.columns:
+                        st.warning("No `time` column available for the heatmap. The heatmap requires date+time information.")
+                    else:
+                        net_values = filtered_sentiment[selected_cols["pos"]].fillna(0) - filtered_sentiment[selected_cols["neg"]].fillna(0)
+                        if (net_values != 0).sum() < len(net_values) * 0.05:
+                            st.info(
+                                "Twitter-RoBERTa net values are sparse in this dataset, so the heatmap may appear close to zero. "
+                                "This is expected when most predictions are neutral or when the model only produces a few non-neutral probabilities."
+                            )
+                        try:
+                            fig_heat, heatmap_df, df_out = plot_sentiment_heatmap(
+                                filtered_sentiment,
+                                date_col="date",
+                                time_col="time",
+                                message_col="message",
+                                pos_col=selected_cols["pos"],
+                                neg_col=selected_cols["neg"],
+                                neu_col=selected_cols["neu"],
+                                metric="net",
+                                agg="mean"
+                            )
+                            st.plotly_chart(fig_heat, use_container_width=True)
+                        except Exception as exc:
+                            st.error(f"Unable to render sentiment heatmap: {exc}")
+
+                    sentiment_summary = (
+                        grouped.groupby("sender")["mean_compound"]
+                        .mean()
+                        .reset_index(name="avg_mean_compound")
+                        .sort_values("avg_mean_compound", ascending=False)
+                    )
+
+                    st.subheader("Average compound sentiment by sender")
+                    st.dataframe(sentiment_summary)
     elif choice == "Mental health analysis":
         st.header("Mental health analysis")
         st.write("Placeholder for mental health analysis tools and visualizations.")
