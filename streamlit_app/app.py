@@ -8,8 +8,6 @@ from wordcloud import WordCloud
 import sys
 from datetime import timedelta
 
-# Add utils to path
-# sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from utils.messages_dual_radial_bars import create_messages_dual_radial_bars
 from utils.sentiment_heatmap import plot_sentiment_heatmap
 
@@ -42,6 +40,99 @@ def upload_sentiment_results() -> pd.DataFrame:
         return sentiment_df
     except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data
+def upload_mental_health_results() -> pd.DataFrame:
+    csv_path = Path(__file__).parent.parent / "output_data" / "mental" / "group_chat_merged_consecutive_mental_health_scores.csv"
+    try:
+        mental_df = pd.read_csv(csv_path)
+        sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+        if "sender" in mental_df.columns:
+            mental_df["sender"] = mental_df["sender"].replace(sender_rename)
+        return mental_df
+    except Exception:
+        return pd.DataFrame()
+
+
+def _aggregate_mental_health_daily(df: pd.DataFrame) -> pd.DataFrame:
+    df = _parse_date_column(df)
+    if "date" not in df.columns:
+        return pd.DataFrame()
+    agg_columns = [col for col in ["anxiety_score", "depression_score", "suicidal_score", "stress_score", "normal_score"] if col in df.columns]
+    if not agg_columns:
+        return pd.DataFrame()
+    if "sender" in df.columns:
+        grouped = (
+            df.dropna(subset=["date"])
+            .groupby([df["sender"], df["date"].dt.normalize()])[agg_columns]
+            .mean()
+            .reset_index()
+            .rename(columns={"date": "date"})
+        )
+    else:
+        grouped = (
+            df.dropna(subset=["date"])
+            .groupby(df["date"].dt.normalize())[agg_columns]
+            .mean()
+            .reset_index()
+        )
+    grouped = grouped.sort_values(["sender", "date"]) if "sender" in grouped.columns else grouped.sort_values("date")
+    return grouped
+
+
+def _compute_baseline_threshold(df: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
+    baseline_rows = []
+    for sender, sender_df in df.groupby("sender"):
+        sender_df = sender_df.sort_values("date")
+        row = {"sender": sender}
+        for metric in metrics:
+            if metric not in sender_df.columns:
+                continue
+            baseline = sender_df[metric].mean()
+            std_dev = sender_df[metric].std(ddof=0)
+            threshold = baseline + max(0.05, std_dev)
+            row[f"{metric}_baseline"] = baseline
+            row[f"{metric}_threshold"] = threshold
+        baseline_rows.append(row)
+    return pd.DataFrame(baseline_rows)
+
+
+def _compute_mental_health_alerts(message_df: pd.DataFrame, baseline_df: pd.DataFrame, metrics: list[str], amber_pct: float = 0.15, red_pct: float = 0.25) -> pd.DataFrame:
+    alerts = []
+    for sender, sender_df in message_df.groupby("sender"):
+        if sender_df.empty:
+            continue
+        sender_baseline = baseline_df[baseline_df["sender"] == sender]
+        if sender_baseline.empty:
+            continue
+        total_messages = len(sender_df)
+        if total_messages == 0:
+            continue
+        for metric in metrics:
+            if metric not in sender_df.columns:
+                continue
+            baseline = sender_baseline[f"{metric}_baseline"].iloc[0]
+            threshold = sender_baseline[f"{metric}_threshold"].iloc[0]
+            count_above = (sender_df[metric] > threshold).sum()
+            pct_above = count_above / total_messages
+            if pct_above >= red_pct:
+                status = "Red"
+            elif pct_above >= amber_pct:
+                status = "Amber"
+            else:
+                status = "Green"
+            alerts.append({
+                "sender": sender,
+                "metric": metric,
+                "baseline": baseline,
+                "threshold": threshold,
+                "messages_above_threshold": int(count_above),
+                "message_count": int(total_messages),
+                "pct_above_threshold": pct_above,
+                "status": status,
+            })
+    return pd.DataFrame(alerts)
 
 
 def _parse_date_column(df: pd.DataFrame) -> pd.DataFrame:
@@ -500,8 +591,190 @@ def main():
                         st.warning("No emotion score columns were found in the sentiment data to build the Emotion Analysis radar chart.")
     elif choice == "Mental health analysis":
         st.header("Mental health analysis")
-        st.write("Placeholder for mental health analysis tools and visualizations.")
+
+        mental_df = upload_mental_health_results()
+        if mental_df.empty:
+            st.error(
+                "Could not load mental health results from `output_data/mental/group_chat_merged_consecutive_mental_health_scores.csv`. "
+                "Please ensure the file exists and has the expected columns."
+            )
+        else:
+            mental_df = _parse_date_column(mental_df)
+            filtered_mental = mental_df.copy()
+
+            if selected_senders:
+                filtered_mental = filtered_mental[filtered_mental["sender"].isin(selected_senders)]
+
+            if selected_date_range is not None and len(selected_date_range) == 2 and "date" in filtered_mental.columns:
+                start_date, end_date = selected_date_range
+                filtered_mental = filtered_mental[
+                    (filtered_mental["date"] >= pd.to_datetime(start_date)) &
+                    (filtered_mental["date"] <= pd.to_datetime(end_date))
+                ]
+
+            if filtered_mental.empty:
+                st.warning("No mental health data available for the selected senders/date range.")
+            else:
+                daily_agg = _aggregate_mental_health_daily(filtered_mental)
+                if daily_agg.empty:
+                    st.warning("Unable to aggregate mental health scores by date. Check the data columns.")
+                else:
+                    st.subheader("Mental health score highlights by sender")
+                    senders = sorted(daily_agg["sender"].dropna().unique())
+                    metric_display_names = {
+                        "anxiety_score": "Anxiety",
+                        "depression_score": "Depression",
+                        "stress_score": "Stress",
+                        "normal_score": "Normal",
+                    }
+                    metric_order = ["anxiety_score", "depression_score", "stress_score", "normal_score"]
+                    for sender in senders:
+                        sender_row = daily_agg[daily_agg["sender"] == sender]
+                        if sender_row.empty:
+                            continue
+                        latest_values = sender_row.sort_values("date").iloc[-1]
+                        st.markdown(f"#### {sender}")
+                        cols = st.columns(4)
+                        for panel_col, metric_name in zip(cols, metric_order):
+                            if metric_name not in sender_row.columns:
+                                panel_col.warning(f"Missing {metric_name}")
+                                continue
+                            latest_value = latest_values[metric_name]
+                            start_value = sender_row[metric_name].iloc[0] if len(sender_row) > 0 else 0.0
+                            delta_value = latest_value - start_value
+                            delta_color = "inverse" if metric_name == "stress_score" else "normal"
+                            panel_col.metric(
+                                metric_display_names[metric_name],
+                                f"{latest_value:.3f}",
+                                f"{delta_value:+.3f} since first",
+                                delta_color=delta_color,
+                            )
+
+                    st.markdown(
+                        "### Daily mental health summary and message-level drilldown"
+                    )
+                    smoothing_window = st.slider(
+                        "Rolling average window (days)",
+                        min_value=1,
+                        max_value=30,
+                        value=7,
+                        help="Smooth the daily trend data with a rolling average.",
+                    )
+
+                    selected_metric = st.selectbox(
+                        "Select mental health score to plot",
+                        options=["anxiety_score", "depression_score", "stress_score", "normal_score"],
+                        format_func=lambda x: metric_display_names.get(x, x),
+                        index=0,
+                    )
+                    if selected_metric not in daily_agg.columns:
+                        st.warning(f"Selected metric `{selected_metric}` is not available in the data.")
+                    else:
+                        metric_df = daily_agg.copy()
+                        metric_df["metric_rolling"] = metric_df.groupby("sender")[selected_metric].transform(
+                            lambda x: x.rolling(window=smoothing_window, min_periods=1).mean()
+                        )
+                        st.subheader(f"{metric_display_names.get(selected_metric, selected_metric)} trend by sender")
+                        fig_metric = px.line(
+                            metric_df,
+                            x="date",
+                            y="metric_rolling",
+                            color="sender",
+                            markers=True,
+                            title=f"Rolling {metric_display_names.get(selected_metric, selected_metric)} scores by sender",
+                            labels={"metric_rolling": f"Rolling {metric_display_names.get(selected_metric, selected_metric)} score", "date": "Date", "sender": "Sender"},
+                        )
+                        fig_metric.update_layout(hovermode="x unified", height=500)
+                        st.plotly_chart(fig_metric, use_container_width=True)
+
+                st.subheader("Message-level mental health predictions")
+                st.markdown(
+                    "Use this table to drill down into the individual message predictions while preserving the daily aggregated trend above."
+                )
+                alert_source_for_labels = filtered_mental.copy()
+                top_label_options = [
+                    label for label in sorted(filtered_mental["mental_health_top_label"].dropna().unique().tolist())
+                    if label.lower() not in {"normal", "suicidal"}
+                ]
+                if top_label_options:
+                    selected_top_label = st.selectbox("Filter by predicted mental health label", top_label_options, index=0)
+                    filtered_mental = filtered_mental[filtered_mental["mental_health_top_label"] == selected_top_label]
+                else:
+                    selected_top_label = None
+
+                display_columns = [
+                    col for col in ["date", "time", "sender", "mental_health_top_label", "mental_health_top_score", "message"]
+                    if col in filtered_mental.columns
+                ]
+                st.write(f"Showing {len(filtered_mental)} message rows")
+                with st.expander("Show message-level data", expanded=False):
+                    st.dataframe(filtered_mental[display_columns].sort_values("date", ascending=False).reset_index(drop=True))
+
+                st.subheader("Alert Logic and Sender Baselines")
+                st.markdown(
+                    "These alert signals are based on all messages in the current selected date range. "
+                    "Each sender's baseline is calculated from their full historical mental health profile, and the threshold is defined as baseline + one standard deviation. "
+                    "A sender receives an amber signal when at least 15% of the current range messages exceed the metric threshold, and a red signal when at least 25% exceed it. "
+                    "This helps surface broad, sustained elevation in anxiety, depression, or stress levels across the selected window."
+                )
+
+                alert_metrics = ["anxiety_score", "depression_score", "stress_score"]
+                baseline_source = mental_df.copy()
+                if selected_senders:
+                    baseline_source = baseline_source[baseline_source["sender"].isin(selected_senders)]
+
+                baseline_daily = _aggregate_mental_health_daily(baseline_source)
+                baseline_threshold_df = _compute_baseline_threshold(baseline_daily, alert_metrics)
+
+                baseline_rows = []
+                display_names = {
+                    "anxiety_score": "Anxiety",
+                    "depression_score": "Depression",
+                    "stress_score": "Stress",
+                }
+                for _, row in baseline_threshold_df.iterrows():
+                    for metric in alert_metrics:
+                        baseline_rows.append(
+                            {
+                                "sender": row["sender"],
+                                "metric": display_names.get(metric, metric),
+                                "baseline": row.get(f"{metric}_baseline", None),
+                                "threshold": row.get(f"{metric}_threshold", None),
+                            }
+                        )
+                baseline_table = pd.DataFrame(baseline_rows)
+                with st.expander("Baseline and threshold values", expanded=False):
+                    if not baseline_table.empty:
+                        st.dataframe(baseline_table)
+                    else:
+                        st.warning("Baseline values could not be calculated because sender-level historical data is missing.")
+
+                filtered_mental_for_alerts = alert_source_for_labels.copy()
+                alert_df = _compute_mental_health_alerts(filtered_mental_for_alerts, baseline_threshold_df, alert_metrics)
+                if alert_df.empty:
+                    st.warning("No alert data could be generated for the selected senders and date range.")
+                else:
+                    display_order = ["sender"] + [display_names[metric] for metric in alert_metrics]
+                    status_emoji = {"Green": "🟢", "Amber": "🟠", "Red": "🔴"}
+                    signal_rows = []
+                    for sender in sorted(alert_df["sender"].unique()):
+                        row = {"sender": sender}
+                        sender_df = alert_df[alert_df["sender"] == sender]
+                        for metric in alert_metrics:
+                            metric_name = display_names[metric]
+                            status = sender_df.loc[sender_df["metric"] == metric, "status"]
+                            if not status.empty:
+                                row[metric_name] = status_emoji.get(status.iloc[0], "⚪")
+                            else:
+                                row[metric_name] = "⚪"
+                        signal_rows.append(row)
+                    signal_table = pd.DataFrame(signal_rows)[display_order]
+                    st.write("#### Alert signal panel")
+                    st.markdown(
+                        "Each row shows the alert status for a sender and each metric. "
+                        "A green circle means normal range, amber means elevated, and red means high confidence of sustained worsening."
+                    )
+                    st.table(signal_table)
 
 if __name__ == "__main__":
     main()
-

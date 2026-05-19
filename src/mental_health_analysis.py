@@ -11,6 +11,13 @@ DEFAULT_INPUT_FILE = Path("output_data/prep_logs/group_chat_merged_consecutive.c
 DEFAULT_OUTPUT_FILE = Path("output_data/mental/group_chat_merged_consecutive_mental_health_scores.csv")
 DEFAULT_TEXT_COLUMN = "message"
 
+MENTAL_HEALTH_LABELS = {
+    0: "anxiety",
+    1: "normal",
+    2: "depression",
+    3: "suicidal",
+    4: "stress",
+}
 
 def add_mental_health_scores(
     df: pd.DataFrame,
@@ -43,10 +50,17 @@ def add_mental_health_scores(
     if not id2label:
         raise ValueError("The model config does not expose an id2label mapping.")
 
-    label_names = {
-        int(idx): str(label).strip().lower().replace(" ", "_").replace("-", "_")
+    if all(
+        isinstance(label, str)
+        and label.strip().upper() == f"LABEL_{int(idx)}"
         for idx, label in id2label.items()
-    }
+    ):
+        label_names = MENTAL_HEALTH_LABELS
+    else:
+        label_names = {
+            int(idx): str(label).strip().lower().replace(" ", "_").replace("-", "_")
+            for idx, label in id2label.items()
+        }
 
     texts = out[text_col].fillna("").astype(str).tolist()
 
