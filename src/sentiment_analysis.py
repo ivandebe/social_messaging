@@ -26,80 +26,120 @@ def apply_vader_sentiment(data: pd.DataFrame, text_column: str = "message") -> p
     return pd.concat([data.reset_index(drop=True), sentiment_scores.reset_index(drop=True)], axis=1)
 
 
-def apply_twitter_roberta_sentiment(data: pd.DataFrame, text_column: str = "message", batch_size: int = 32) -> pd.DataFrame:
+def apply_twitter_roberta_sentiment(
+    data: pd.DataFrame,
+    text_column: str = "message",
+    batch_size: int = 32,
+) -> pd.DataFrame:
     """Apply Twitter-RoBERTa sentiment analysis to messages using batch processing."""
+
     data = data.copy()
-    data[text_column] = data[text_column].fillna("")
-    
+    data[text_column] = data[text_column].fillna("").astype(str)
+
     classifier = pipeline(
         "text-classification",
         model="cardiffnlp/twitter-roberta-base-sentiment-latest",
         return_all_scores=True,
         truncation=True,
-        device=-1,  # Use CPU; change to 0 for GPU
+        device=-1,
     )
-    
-    def normalize_text(text):
-        """Truncate text to a reasonable length for the model."""
-        if not isinstance(text, str) or len(text.strip()) == 0:
+
+    def normalize_text(text: str) -> str:
+        text = text.strip()
+        if not text:
             return ""
-        # Truncate to ~500 chars to stay within token limits
-        return text[:500]
-    
-    # Normalize all texts first
+        tokens = []
+        for t in text.split():
+            if t.startswith("@") and len(t) > 1:
+                tokens.append("@user")
+            elif t.startswith("http"):
+                tokens.append("http")
+            else:
+                tokens.append(t)
+        return " ".join(tokens)[:500]
+
     texts = data[text_column].apply(normalize_text).tolist()
-    
-    # Process in batches for efficiency
     sentiment_scores_list = []
+
+    label_map = {
+        "LABEL_0": "negative",
+        "LABEL_1": "neutral",
+        "LABEL_2": "positive",
+        "negative": "negative",
+        "neutral": "neutral",
+        "positive": "positive",
+        "Negative": "negative",
+        "Neutral": "neutral",
+        "Positive": "positive",
+    }
+
     total = len(texts)
-    
+
     for i in range(0, total, batch_size):
         batch_end = min(i + batch_size, total)
         batch = texts[i:batch_end]
-        
-        # Filter out empty strings for processing
-        batch_with_idx = [(idx, text) for idx, text in enumerate(range(i, batch_end)) if texts[idx]]
-        
-        if not batch_with_idx:
-            for _ in range(batch_end - i):
-                sentiment_scores_list.append({})
-            continue
-        
-        batch_texts = [texts[idx] for idx, _ in batch_with_idx]
-        
-        try:
-            # Classify the batch
-            results = classifier(batch_texts)
-            
-            # Process results
-            result_idx = 0
-            for batch_idx in range(batch_end - i):
-                original_idx = i + batch_idx
-                
-                if original_idx in [idx for idx, _ in batch_with_idx]:
-                    if isinstance(results[result_idx], list):
-                        # Format: list of dicts with 'label' and 'score'
-                        scores = {item["label"]: item["score"] for item in results[result_idx]}
+
+        batch_with_idx = [
+            (i + offset, text)
+            for offset, text in enumerate(batch)
+            if text
+        ]
+
+        batch_result_map = {}
+
+        if batch_with_idx:
+            batch_texts = [text for _, text in batch_with_idx]
+
+            try:
+                results = classifier(batch_texts)
+
+                for (original_idx, _), result in zip(batch_with_idx, results):
+                    scores = {"negative": np.nan, "neutral": np.nan, "positive": np.nan}
+
+                    if isinstance(result, dict):
+                        result = [result]
+
+                    if isinstance(result, list):
+                        for item in result:
+                            if not isinstance(item, dict):
+                                continue
+                            raw_label = item.get("label")
+                            score = float(item.get("score", 0.0))
+                            mapped_label = label_map.get(raw_label, str(raw_label).lower())
+                            if mapped_label in scores:
+                                scores[mapped_label] = score
                     else:
-                        # Single result
-                        scores = {results[result_idx]["label"]: results[result_idx]["score"]}
-                    sentiment_scores_list.append(scores)
-                    result_idx += 1
-                else:
-                    sentiment_scores_list.append({})
-        except Exception as e:
-            print(f"Error processing batch {i}-{batch_end}: {e}")
-            for _ in range(batch_end - i):
-                sentiment_scores_list.append({})
-        
-        if (i + batch_size) % (batch_size * 10) == 0:
-            print(f"  Processed {min(i + batch_size, total)}/{total} messages")
-    
-    # Convert list of dicts to DataFrame
-    sentiment_df = pd.DataFrame(sentiment_scores_list).fillna(0.0)
+                        print(
+                            f"Warning: unexpected result format in batch {i}-{batch_end}: {type(result).__name__}"
+                        )
+
+                    batch_result_map[original_idx] = scores
+
+            except Exception as e:
+                print(f"Error processing batch {i}-{batch_end}: {e}")
+
+        for original_idx in range(i, batch_end):
+            if original_idx in batch_result_map:
+                sentiment_scores_list.append(batch_result_map[original_idx])
+            else:
+                sentiment_scores_list.append({
+                    "negative": np.nan,
+                    "neutral": np.nan,
+                    "positive": np.nan
+                })
+
+        if (batch_end % (batch_size * 10) == 0) or (batch_end == total):
+            print(f"Processed {batch_end}/{total} messages")
+
+    sentiment_df = pd.DataFrame(sentiment_scores_list)
     sentiment_df.columns = [f"twitter_roberta_{col}" for col in sentiment_df.columns]
-    
-    return pd.concat([data.reset_index(drop=True), sentiment_df.reset_index(drop=True)], axis=1)
+    sentiment_df["twitter_roberta_compound"] = (
+        sentiment_df["twitter_roberta_positive"] - sentiment_df["twitter_roberta_negative"]
+    )
+    return pd.concat(
+        [data.reset_index(drop=True), sentiment_df.reset_index(drop=True)],
+        axis=1,
+    )
 
 
 def apply_huggingface_emotion(data: pd.DataFrame, text_column: str = "message", batch_size: int = 32) -> pd.DataFrame:
@@ -134,31 +174,36 @@ def apply_huggingface_emotion(data: pd.DataFrame, text_column: str = "message", 
         batch = texts[i:batch_end]
         
         # Filter out empty strings for processing
-        batch_with_idx = [(idx, text) for idx, text in enumerate(range(i, batch_end)) if texts[idx]]
-        
+        batch_with_idx = [(idx, texts[idx]) for idx in range(i, batch_end) if texts[idx]]
+
         if not batch_with_idx:
             for _ in range(batch_end - i):
                 emotion_scores_list.append({})
             continue
-        
-        batch_texts = [texts[idx] for idx, _ in batch_with_idx]
-        
+
+        batch_texts = [text for _, text in batch_with_idx]
+
         try:
             # Classify the batch
             results = classifier(batch_texts)
-            
-            # Process results
+            valid_indices = [idx for idx, _ in batch_with_idx]
             result_idx = 0
-            for batch_idx in range(batch_end - i):
-                original_idx = i + batch_idx
-                
-                if original_idx in [idx for idx, _ in batch_with_idx]:
-                    if isinstance(results[result_idx], list):
-                        # Format: list of dicts with 'label' and 'score'
-                        scores = {item["label"]: item["score"] for item in results[result_idx]}
+
+            for original_idx in range(i, batch_end):
+                if original_idx in valid_indices:
+                    result = results[result_idx]
+                    if isinstance(result, dict):
+                        result = [result]
+
+                    if isinstance(result, list):
+                        scores = {
+                            item.get("label", f"label_{j}"): item.get("score", 0.0)
+                            for j, item in enumerate(result)
+                            if isinstance(item, dict)
+                        }
                     else:
-                        # Single result
-                        scores = {results[result_idx]["label"]: results[result_idx]["score"]}
+                        scores = {}
+
                     emotion_scores_list.append(scores)
                     result_idx += 1
                 else:

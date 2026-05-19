@@ -39,8 +39,6 @@ def upload_sentiment_results() -> pd.DataFrame:
         sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
         if "sender" in sentiment_df.columns:
             sentiment_df["sender"] = sentiment_df["sender"].replace(sender_rename)
-        if "twitter_roberta_positive" in sentiment_df.columns:
-            sentiment_df["twitter_roberta_compound"] = sentiment_df["twitter_roberta_positive"]-sentiment_df["twitter_roberta_negative"]
         return sentiment_df
     except Exception:
         return pd.DataFrame()
@@ -451,6 +449,55 @@ def main():
 
                     st.subheader("Average compound sentiment by sender")
                     st.dataframe(sentiment_summary)
+
+                    emotion_cols = [col for col in filtered_sentiment.columns if col.startswith("emotion_") and col!="emotion_neutral"]
+                    if emotion_cols:
+                        st.subheader("Emotion Analysis")
+                        st.markdown(
+                            "This chart shows the average emotion scores detected by the `j-hartmann/emotion-english-distilroberta-base` model. "
+                            "The model predicts a probability-like score for each emotion label, and each radar chart below visualizes the mean strength of each emotion for that sender."
+                        )
+                        
+                        # Calculate emotion scores per sender
+                        senders = filtered_sentiment["sender"].dropna().unique()
+                        for sender in sorted(senders):
+                            sender_data = filtered_sentiment[filtered_sentiment["sender"] == sender]
+                            emotion_summary = (
+                                sender_data[emotion_cols]
+                                .astype(float)
+                                .mean(skipna=True)
+                                .reset_index(name="score")
+                                .rename(columns={"index": "emotion"})
+                            )
+                            # Sort by emotion name for consistent radar chart ordering
+                            emotion_summary = emotion_summary.sort_values("emotion")
+                            
+                            # Calculate dynamic radialaxis max based on the highest emotion score
+                            max_score = emotion_summary["score"].max()
+                            # Round up to make it slightly bigger than max to ensure the border is close to max
+                            radial_max = max(max_score * 1.1, 0.1)
+                            
+                            fig_emotion = go.Figure(
+                                data=[
+                                    go.Scatterpolar(
+                                        r=emotion_summary["score"].fillna(0),
+                                        theta=emotion_summary["emotion"].str.replace("emotion_", "", regex=False),
+                                        fill="toself",
+                                        name=f"Emotion scores",
+                                    )
+                                ]
+                            )
+                            fig_emotion.update_layout(
+                                polar=dict(
+                                    radialaxis=dict(visible=True, range=[0, radial_max]),
+                                ),
+                                showlegend=False,
+                                title=f"Emotion scores - {sender}",
+                                height=500
+                            )
+                            st.plotly_chart(fig_emotion, use_container_width=True)
+                    else:
+                        st.warning("No emotion score columns were found in the sentiment data to build the Emotion Analysis radar chart.")
     elif choice == "Mental health analysis":
         st.header("Mental health analysis")
         st.write("Placeholder for mental health analysis tools and visualizations.")
