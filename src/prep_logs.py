@@ -55,16 +55,31 @@ def parse_whatsapp_chat(file_path: Path) -> pd.DataFrame:
 
     return data
 
+def merge_consecutive_messages(data: pd.DataFrame) -> pd.DataFrame:
+    """Merge consecutive messages from the same sender on the same day."""
+    data = data.copy()
+    data["date"] = pd.to_datetime(data["date"], dayfirst=True, errors="coerce").dt.date
+    data["time"] = pd.to_datetime(data["time"], format="%H:%M", errors="coerce").dt.time
 
-def aggregate_messages_by_user(data: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate all messages by sender into a single text blob per user."""
-    aggregated_data = (
-        data.groupby("sender")["message"]
-        .apply(lambda x: " ".join(x.dropna()))
-        .reset_index()
-    )
-    aggregated_data.columns = ["sender", "all_messages"]
-    return aggregated_data
+    merged_data = []
+    current_message = None
+
+    for _, row in data.iterrows():
+        if (
+            current_message
+            and row["sender"] == current_message["sender"]
+            and row["date"] == current_message["date"]
+        ):
+            current_message["message"] += "\n" + row["message"]
+        else:
+            if current_message:
+                merged_data.append(current_message)
+            current_message = row.to_dict()
+
+    if current_message:
+        merged_data.append(current_message)
+
+    return pd.DataFrame(merged_data)
 
 
 def chunk_messages_by_token_limit(
@@ -186,19 +201,18 @@ def main() -> None:
     data = parse_whatsapp_chat(input_file)
     print(f"Parsed {len(data)} messages.")
 
-    aggregated_data = aggregate_messages_by_user(data)
     chunked_data = chunk_messages_by_token_limit(
         data,
         tokenizer_name=args.tokenizer,
         max_chunk_size=args.max_chunk_size,
     )
 
-    cleaned_path = save_dataframe(data, output_dir, "group_chat_cleaned.csv")
-    aggregated_path = save_dataframe(aggregated_data, output_dir, "aggregated_data_by_user.csv")
+    cleaned_path = save_dataframe(data, output_dir, "group_chat_cleaned_single.csv")
+    merged_path = save_dataframe(merge_consecutive_messages(data), output_dir, "group_chat_merged_consecutive.csv")
     chunked_path = save_dataframe(chunked_data, output_dir, "chunked_data.csv")
 
     print(f"Saved cleaned messages to: {cleaned_path}")
-    print(f"Saved aggregated messages to: {aggregated_path}")
+    print(f"Saved merged messages to: {merged_path}")
     print(f"Saved chunked messages to: {chunked_path}")
 
 

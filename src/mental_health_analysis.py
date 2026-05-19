@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from transformers import pipeline
 
-DEFAULT_INPUT_FILE = "group_chat_cleaned.csv"
+DEFAULT_INPUT_FILE = "group_chat_merged_consecutive.csv"
 DEFAULT_OUTPUT_SUBFOLDER = "mental"
 DEFAULT_OUTPUT_FILENAME = "mental_health_classification.csv"
 DEFAULT_TEXT_COLUMN = "message"

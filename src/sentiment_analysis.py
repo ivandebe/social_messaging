@@ -7,7 +7,7 @@ from transformers import pipeline
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 
-DEFAULT_INPUT_FILE = "group_chat_cleaned.csv"
+DEFAULT_INPUT_FILE = "group_chat_merged_consecutive.csv"
 DEFAULT_OUTPUT_SUBFOLDER = "sentiment"
 
 

@@ -5,14 +5,24 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import plotly.express as px
 from wordcloud import WordCloud
+import sys
+from datetime import timedelta
 
+# Add utils to path
+# sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+from utils.messages_dual_radial_bars import create_messages_dual_radial_bars
+
+# TODO need to check the chunk dataset and the dates format as well
 
 @st.cache_data
 def upload_history_chat() -> pd.DataFrame:
-    # csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "group_chat_cleaned.csv"
-    csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "chunked_data.csv"
+    csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "group_chat_merged_consecutive.csv"
+    # csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "chunked_data.csv"
     try:
         chat_df = pd.read_csv(csv_path)
+        sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+        if "sender" in chat_df.columns:
+            chat_df["sender"] = chat_df["sender"].replace(sender_rename)
         if "chunk" in chat_df.columns:
             chat_df = chat_df.rename(columns={"chunk": "message"})
         return chat_df
@@ -55,20 +65,41 @@ def main():
         choice = st.radio("Select view", ("Explore chat history", "Topic Analysis", "Sentiment analysis", "Mental health analysis"))
 
         if chat_df.empty:
-            st.error("Could not load `group_chat_cleaned.csv`. Please check `output_data/prep_logs`.")
+            st.error("Could not load `group_chat_merged_consecutive.csv`. Please check `output_data/prep_logs`.")
         else:
             if "date" in chat_df.columns:
                 min_date = chat_df["date"].dropna().min()
                 max_date = chat_df["date"].dropna().max()
                 if pd.notna(min_date) and pd.notna(max_date):
-                    selected_date_range = st.date_input(
-                        "Select date range",
-                        value=(min_date.date() if hasattr(min_date, "date") else min_date,
-                               max_date.date() if hasattr(max_date, "date") else max_date),
-                        min_value=min_date.date() if hasattr(min_date, "date") else min_date,
-                        max_value=max_date.date() if hasattr(max_date, "date") else max_date,
-                        format="DD/MM/YYYY",
+                    # Convert to date objects if needed
+                    min_date_obj = min_date.date() if hasattr(min_date, "date") else min_date
+                    max_date_obj = max_date.date() if hasattr(max_date, "date") else max_date
+                    
+                    # Date range presets based on max_date (not today)
+                    date_preset = st.radio(
+                        "Date range preset",
+                        ("Past Week", "Past Month", "Past 6 Months", "All History", "Custom")
                     )
+                    
+                    if date_preset == "Past Week":
+                        start_date_preset = max_date_obj - timedelta(days=7)
+                        selected_date_range = (start_date_preset, max_date_obj)
+                    elif date_preset == "Past Month":
+                        start_date_preset = max_date_obj - timedelta(days=30)
+                        selected_date_range = (start_date_preset, max_date_obj)
+                    elif date_preset == "Past 6 Months":
+                        start_date_preset = max_date_obj - timedelta(days=180)
+                        selected_date_range = (start_date_preset, max_date_obj)
+                    elif date_preset == "All History":
+                        selected_date_range = (min_date_obj, max_date_obj)
+                    else:  # Custom
+                        selected_date_range = st.date_input(
+                            "Select custom date range",
+                            value=(max_date_obj - timedelta(days=180), max_date_obj),
+                            min_value=min_date_obj,
+                            max_value=max_date_obj,
+                            format="DD/MM/YYYY",
+                        )
                 else:
                     st.warning("The loaded chat history does not contain a valid date range.")
             else:
@@ -168,6 +199,23 @@ def main():
                     st.subheader("Search results")
                     st.write(f"Found {len(search_df)} matching rows")
                     st.dataframe(search_df.head(100))
+
+            # Messages by hour chart
+            st.subheader("Messages by Hour")
+            if "time" in filtered_df.columns and not filtered_df["time"].dropna().empty:
+                # Extract hour from time string (format: HH:MM:SS)
+                filtered_df["hour"] = pd.to_datetime(filtered_df["time"], format="%H:%M:%S", errors="coerce").dt.hour
+                hourly_counts = filtered_df.groupby("hour").size()
+                
+                # Create array of 24 hours with counts (0 if no messages in that hour)
+                counts = [hourly_counts.get(hour, 0) for hour in range(24)]
+                
+                # Create and display the chart
+                fig_radial = create_messages_dual_radial_bars(counts)
+                fig_radial.update_layout(height=600)
+                st.plotly_chart(fig_radial, width='stretch')
+            else:
+                st.warning("No time information available to create hourly message chart.")
 
     elif choice == "Topic Analysis":
         if chat_df.empty:
