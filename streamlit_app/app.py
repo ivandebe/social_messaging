@@ -54,6 +54,18 @@ def upload_mental_health_results() -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
+@st.cache_data
+def upload_topic_results() -> pd.DataFrame:
+    csv_path = Path(__file__).parent.parent / "output_data" / "topic" / "topic_consecutive.csv"
+    try:
+        topic_df = pd.read_csv(csv_path)
+        sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+        if "sender" in topic_df.columns:
+            topic_df["sender"] = topic_df["sender"].replace(sender_rename)
+        return topic_df
+    except Exception:
+        return pd.DataFrame()
+
 
 def _aggregate_mental_health_daily(df: pd.DataFrame) -> pd.DataFrame:
     df = _parse_date_column(df)
@@ -153,11 +165,17 @@ def main():
 
     chat_df = upload_history_chat()
     sentiment_df = upload_sentiment_results()
+    topic_df = upload_topic_results()
+    mental_df = upload_mental_health_results()
 
     if not chat_df.empty:
         chat_df = _parse_date_column(chat_df)
     if not sentiment_df.empty:
         sentiment_df = _parse_date_column(sentiment_df)
+    if not topic_df.empty:
+        topic_df = _parse_date_column(topic_df)
+    if not mental_df.empty:
+        mental_df = _parse_date_column(mental_df)
 
     selected_senders = []
     selected_date_range = None
@@ -269,7 +287,7 @@ def main():
                     color_discrete_sequence=CUSTOM_COLORS,
                 )
                 fig_bar.update_layout(showlegend=False, height=max(300, len(sender_counts) * 40))
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width="stretch")
 
             if "date" in filtered_df.columns and not filtered_df["date"].dropna().empty:
                 daily_counts = (
@@ -290,11 +308,12 @@ def main():
                     color_discrete_sequence=CUSTOM_COLORS,
                 )
                 fig_line.update_layout(hovermode="x unified", height=400)
-                st.plotly_chart(fig_line, use_container_width=True)
+                st.plotly_chart(fig_line, width="stretch")
 
             st.write(f"Showing {len(filtered_df)} rows")
             st.dataframe(filtered_df.head(20))
 
+            st.subheader("Search messages by exact word or phrase")
             search_query = st.text_input("Search messages", "")
             if st.button("Search"):
                 if search_query.strip() == "":
@@ -329,10 +348,15 @@ def main():
                 st.warning("No time information available to create hourly message chart.")
 
     elif choice == "Topic Analysis":
-        if chat_df.empty:
-            st.error("Could not find or load the chat history DataFrame.")
+        if topic_df.empty:
+            st.error("Could not find or load the topic analysis DataFrame.")
         else:
-            filtered_df = chat_df.copy()
+            filtered_df = topic_df.copy()
+
+            show_outliers = st.checkbox("Include outliers", value=False)
+            if not show_outliers:
+                filtered_df = filtered_df[filtered_df["topic"] != -1]
+
             if selected_senders:
                 filtered_df = filtered_df[filtered_df["sender"].isin(selected_senders)]
             if selected_date_range is not None and len(selected_date_range) == 2 and "date" in filtered_df.columns:
@@ -344,45 +368,238 @@ def main():
 
             st.header("Topic Analysis")
 
-            if "message" in filtered_df.columns and not filtered_df.empty:
-                all_messages = " ".join(filtered_df["message"].astype(str).dropna())
-                if all_messages.strip():
-                    wordcloud = WordCloud(
-                        width=800,
-                        height=400,
-                        background_color="white",
-                        colormap="viridis"
-                    ).generate(all_messages)
-                    fig_wc, ax_wc = plt.subplots(figsize=(10, 5))
-                    ax_wc.imshow(wordcloud, interpolation="bilinear")
-                    ax_wc.axis("off")
-                    st.pyplot(fig_wc)
+            # WordCloud
+            # if "message" in filtered_df.columns and not filtered_df.empty:
+            #     all_messages = " ".join(filtered_df["message"].astype(str).dropna())
+            #     if all_messages.strip():
+            #         wordcloud = WordCloud(
+            #             width=800,
+            #             height=400,
+            #             background_color="white",
+            #             colormap="viridis"
+            #         ).generate(all_messages)
+            #         fig_wc, ax_wc = plt.subplots(figsize=(10, 5))
+            #         ax_wc.imshow(wordcloud, interpolation="bilinear")
+            #         ax_wc.axis("off")
+            #         st.pyplot(fig_wc)
+
+            topic_options = (filtered_df["topic_label"].value_counts().index.tolist())
+
+
+            # KPIs
+            total_messages = len(filtered_df)
+            unique_topics = filtered_df["topic_label"].nunique()
+
+            if total_messages > 0:
+                top_topic = filtered_df["topic_label"].value_counts().idxmax()
+                outlier_share = (filtered_df["topic"].eq(-1).mean()) * 100
+            else:
+                top_topic = "N/A"
+                outlier_share = 0.0
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Messages", f"{total_messages:,}")
+            c2.metric("Unique topics", unique_topics)
+            c3.metric("Top topic", top_topic)
+            c4.metric("Outlier %", f"{outlier_share:.1f}%")
+
+            # ----------------------------
+            # Top topics bar chart
+            # ----------------------------
+            st.subheader("Most discussed topics")
+
+            topic_counts = (
+                filtered_df["topic_label"]
+                .value_counts()
+                .reset_index()
+            )
+            topic_counts.columns = ["topic_label", "message_count"]
+
+            fig_bar = px.bar(
+                topic_counts.head(15),
+                x="message_count",
+                y="topic_label",
+                orientation="h",
+                title="Top 15 topics by message count",
+            )
+            fig_bar.update_layout(yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig_bar, width="stretch")
+
+            # ----------------------------
+            # Topic trend over time
+            # ----------------------------
+            st.subheader("Topic activity over time")
+
+            trend = (
+                filtered_df.groupby(["date", "topic_label"])
+                .size()
+                .reset_index(name="message_count")
+            )
+
+            top_trend_topics = (
+                filtered_df["topic_label"]
+                .value_counts()
+                .head(7)
+                .index
+                .tolist()
+            )
+
+            trend = trend[trend["topic_label"].isin(top_trend_topics)]
+
+            fig_line = px.line(
+                trend,
+                x="date",
+                y="message_count",
+                color="topic_label",
+                markers=True,
+                title="Top topic trends over time (top 7 topics by message count)",
+                labels={"message_count": "Number of messages", "date": "Date"},
+            )
+
+            fig_line.update_layout(
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.25,
+                    xanchor="center",
+                    x=0.5
+                ),
+                margin=dict(t=100, b=120, l=40, r=40)
+            )
+
+            st.plotly_chart(fig_line, width="stretch")
+
+
+            # ----------------------------
+            # Sender-topic heatmap
+            # ----------------------------
+            st.subheader("Who talks about what")
+
+            heatmap_df = (
+                filtered_df.groupby(["sender", "topic_label"])
+                .size()
+                .reset_index(name="message_count")
+            )
+
+            top_heatmap_topics = (
+                filtered_df["topic_label"]
+                .value_counts()
+                .head(10)
+                .index
+                .tolist()
+            )
+            heatmap_df = heatmap_df[heatmap_df["topic_label"].isin(top_heatmap_topics)]
+
+            if not heatmap_df.empty:
+                pivot_df = heatmap_df.pivot(
+                    index="sender",
+                    columns="topic_label",
+                    values="message_count"
+                ).fillna(0)
+
+                fig_heatmap = px.imshow(
+                    pivot_df,
+                    aspect="auto",
+                    color_continuous_scale="Blues",
+                    title="Messages by sender and topic",
+                )
+                st.plotly_chart(fig_heatmap, width='stretch')
+
+            # ----------------------------
+            # Raw messages table
+            # ----------------------------
+            st.subheader("Messages")
+
+            topic_for_table = st.selectbox(
+                "Inspect one topic",
+                options=["All"] + topic_options
+            )
+
+            table_df = filtered_df.copy()
+            if topic_for_table != "All":
+                table_df = table_df[table_df["topic_label"] == topic_for_table]
+
+            st.dataframe(
+                table_df[["date", "sender", "topic", "topic_label", "message"]]
+                .sort_values("date", ascending=False)
+                .reset_index(drop=True),
+                width="stretch",
+                height=500,
+            )
+
+
+            # st.subheader("Topic label selector")
+            # selected_topics = st.sidebar.multiselect(
+            #     "Topic label",
+            #     options=topic_options,
+            #     default=topic_options[:10] if len(topic_options) > 10 else topic_options,
+            #     help="Filter messages by topic label. Showing top 10 most frequent topics by default."
+            #     )
 
             topic_query = st.text_input("Topic messages", "")
             if st.button("Search topic"):
                 if topic_query.strip() == "":
                     st.warning("Enter a topic query to filter messages.")
-                elif "message" not in filtered_df.columns:
-                    st.warning("No `message` column found in the chat history.")
+                elif "topic_label" not in filtered_df.columns:
+                    st.warning("No `topic_label` column found in the topic analysis.")
                 else:
                     topic_df = filtered_df[
-                        filtered_df["message"].astype(str).str.contains(topic_query, case=False, na=False)
+                        filtered_df["topic_label"].astype(str).str.contains(topic_query, case=False, na=False)
                     ]
                     if "date" in topic_df.columns:
                         topic_df = topic_df.sort_values("date")
 
-                    st.write(f"Found {len(topic_df)} matching rows")
+                    st.write(f"Found {len(topic_df)} matching rows. Only show up to 100 rows.")
                     st.dataframe(topic_df.head(100))
 
+                    # # Pie chart and count table
+                    # if "sender" in topic_df.columns and not topic_df.empty:
+                    #     counts = topic_df["sender"].value_counts().rename_axis("sender").reset_index(name="count")
+                    #     counts["percentage"] = counts["count"] / counts["count"].sum() * 100
+                    #     fig, ax = plt.subplots()
+                    #     ax.pie(counts["count"], labels=counts["sender"], autopct="%1.1f%%")
+                    #     ax.axis("equal")
+                    #     st.subheader("Topic frequency by sender")
+                    #     st.pyplot(fig)
+                    #     st.write(counts)
+
+                    # Pie chart and count table
                     if "sender" in topic_df.columns and not topic_df.empty:
-                        counts = topic_df["sender"].value_counts().rename_axis("sender").reset_index(name="count")
+                        counts = (
+                            topic_df["sender"]
+                            .value_counts()
+                            .rename_axis("sender")
+                            .reset_index(name="count")
+                        )
                         counts["percentage"] = counts["count"] / counts["count"].sum() * 100
-                        fig, ax = plt.subplots()
-                        ax.pie(counts["count"], labels=counts["sender"], autopct="%1.1f%%")
-                        ax.axis("equal")
+
                         st.subheader("Topic frequency by sender")
-                        st.pyplot(fig)
-                        st.write(counts)
+
+                        fig = px.pie(
+                            counts,
+                            names="sender",
+                            values="count",
+                            title="Topic frequency by sender",
+                            hole=0.45,
+                            color_discrete_sequence=CUSTOM_COLORS
+                        )
+
+                        fig.update_traces(
+                            textinfo="label+value+percent",
+                            texttemplate="%{label}<br>Count: %{value}<br>%{percent}",
+                            hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Percentage: %{percent}<extra></extra>"
+                        )
+                        
+                        fig.update_layout(
+                            width=950,
+                            height=750,
+                            font=dict(size=16),
+                            margin=dict(t=80, b=40, l=40, r=40)
+                        )
+
+                        st.plotly_chart(fig, width='stretch')
+
+
     elif choice == "Sentiment analysis":
         st.header("Sentiment analysis")
         sentiment_source = st.selectbox(
@@ -503,7 +720,7 @@ def main():
                         )
                         fig_sentiment.update_layout(height=320 * ((sender_count + 1) // 2), showlegend=False)
 
-                    st.plotly_chart(fig_sentiment, use_container_width=True)
+                    st.plotly_chart(fig_sentiment, width="stretch")
 
                     st.subheader("Sentiment heatmap")
                     if "time" not in filtered_sentiment.columns:
@@ -527,7 +744,7 @@ def main():
                                 metric="net",
                                 agg="mean"
                             )
-                            st.plotly_chart(fig_heat, use_container_width=True)
+                            st.plotly_chart(fig_heat, width="stretch")
                         except Exception as exc:
                             st.error(f"Unable to render sentiment heatmap: {exc}")
 
@@ -586,20 +803,18 @@ def main():
                                 title=f"Emotion scores - {sender}",
                                 height=500
                             )
-                            st.plotly_chart(fig_emotion, use_container_width=True)
+                            st.plotly_chart(fig_emotion, width="stretch")
                     else:
                         st.warning("No emotion score columns were found in the sentiment data to build the Emotion Analysis radar chart.")
     elif choice == "Mental health analysis":
         st.header("Mental health analysis")
 
-        mental_df = upload_mental_health_results()
         if mental_df.empty:
             st.error(
                 "Could not load mental health results from `output_data/mental/group_chat_merged_consecutive_mental_health_scores.csv`. "
                 "Please ensure the file exists and has the expected columns."
             )
         else:
-            mental_df = _parse_date_column(mental_df)
             filtered_mental = mental_df.copy()
 
             if selected_senders:
@@ -685,7 +900,7 @@ def main():
                             labels={"metric_rolling": f"Rolling {metric_display_names.get(selected_metric, selected_metric)} score", "date": "Date", "sender": "Sender"},
                         )
                         fig_metric.update_layout(hovermode="x unified", height=500)
-                        st.plotly_chart(fig_metric, use_container_width=True)
+                        st.plotly_chart(fig_metric, width="stretch")
 
                 st.subheader("Message-level mental health predictions")
                 st.markdown(
