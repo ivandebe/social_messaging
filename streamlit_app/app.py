@@ -12,9 +12,39 @@ from utils.messages_dual_radial_bars import create_messages_dual_radial_bars
 from utils.sentiment_heatmap import plot_sentiment_heatmap
 from utils.read_from_postgres import fetch_entire_table
 
-# TODO need to check the chunk dataset and the dates format as well
-
+# Debug variables
 LOCAL_WORK = False
+# -------------------------
+# Authentication section
+# -------------------------
+
+ALLOWED_EMAILS = {
+    email.strip().lower()
+    for email in st.secrets["auth"].get("allowed_emails", [])
+}
+
+def login_screen():
+    st.title("Private app")
+    st.write("Please sign in with Google to continue.")
+    st.button("Log in with Google", on_click=st.login)
+
+if not st.user.is_logged_in:
+    login_screen()
+    st.stop()
+
+user_email = str(st.user.get("email", "")).strip().lower()
+user_name = str(st.user.get("name", "")).strip()
+
+if user_email not in ALLOWED_EMAILS:
+    st.error("Your account is not authorized for this app.")
+    st.write(f"Signed in as: {user_email or 'unknown email'}")
+    st.button("Log out", on_click=st.logout)
+    st.stop()
+
+st.sidebar.success(f"Signed in as {user_email}")
+st.sidebar.button("Log out", on_click=st.logout)
+st.sidebar.divider()
+
 
 @st.cache_data
 def upload_history_chat() -> pd.DataFrame:
@@ -200,7 +230,7 @@ st.set_page_config(page_title="Group Chat Analysis tool", layout="wide")
 CUSTOM_COLORS = ["#dd6e42", "#e8dab2", "#4f6d7a", "#c0d6df"]
 
 def main():
-    st.title("Group Chat Analysis tool")
+    st.title("Group Chat Analysis Dashboard")
 
     chat_df = upload_history_chat()
     sentiment_df = upload_sentiment_results()

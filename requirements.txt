@@ -11,3 +11,4 @@ torch==2.12.0
 transformers==5.8.1
 vaderSentiment==3.3.2
 wordcloud==1.9.6
+Authlib==1.7.2
