@@ -10,61 +10,100 @@ from datetime import timedelta
 
 from utils.messages_dual_radial_bars import create_messages_dual_radial_bars
 from utils.sentiment_heatmap import plot_sentiment_heatmap
+from utils.read_from_postgres import fetch_entire_table
 
 # TODO need to check the chunk dataset and the dates format as well
 
+LOCAL_WORK = False
+
 @st.cache_data
 def upload_history_chat() -> pd.DataFrame:
-    csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "group_chat_merged_consecutive.csv"
-    # csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "chunked_data.csv"
-    try:
-        chat_df = pd.read_csv(csv_path)
-        sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
-        if "sender" in chat_df.columns:
-            chat_df["sender"] = chat_df["sender"].replace(sender_rename)
-        if "chunk" in chat_df.columns:
-            chat_df = chat_df.rename(columns={"chunk": "message"})
+    if LOCAL_WORK:
+        csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "group_chat_merged_consecutive.csv"
+        # csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "chunked_data.csv"
+        try:
+            chat_df = pd.read_csv(csv_path)
+            sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+            if "sender" in chat_df.columns:
+                chat_df["sender"] = chat_df["sender"].replace(sender_rename)
+            if "chunk" in chat_df.columns:
+                chat_df = chat_df.rename(columns={"chunk": "message"})
+            return chat_df
+        except Exception:
+            return pd.DataFrame()
+    else:
+        chat_df = fetch_entire_table("chat_history")
         return chat_df
-    except Exception:
-        return pd.DataFrame()
 
 
 @st.cache_data
 def upload_sentiment_results() -> pd.DataFrame:
-    csv_path = Path(__file__).parent.parent / "output_data" / "sentiment" / "sentiment_analysis_results_consecutive.csv"
-    try:
-        sentiment_df = pd.read_csv(csv_path)
-        sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
-        if "sender" in sentiment_df.columns:
-            sentiment_df["sender"] = sentiment_df["sender"].replace(sender_rename)
-        return sentiment_df
-    except Exception:
-        return pd.DataFrame()
+    if LOCAL_WORK:
+        csv_path = Path(__file__).parent.parent / "output_data" / "sentiment" / "sentiment_analysis_results_consecutive.csv"
+        try:
+            sentiment_df = pd.read_csv(csv_path)
+            sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+            if "sender" in sentiment_df.columns:
+                sentiment_df["sender"] = sentiment_df["sender"].replace(sender_rename)
+            return sentiment_df
+        except Exception:
+            return pd.DataFrame()
+    else:
+        sentiment_df = fetch_entire_table("sentiment_data")
+        num_cols = [
+            col for col in sentiment_df.columns
+            if any(prefix in col for prefix in ["vader", "twitter_roberta", "emotion"])
+        ]
 
+        for col in num_cols:
+            try:
+                sentiment_df[col] = pd.to_numeric(sentiment_df[col], errors="raise")
+            except ValueError:
+                pass
+
+        return sentiment_df
 
 @st.cache_data
 def upload_mental_health_results() -> pd.DataFrame:
-    csv_path = Path(__file__).parent.parent / "output_data" / "mental" / "group_chat_merged_consecutive_mental_health_scores.csv"
-    try:
-        mental_df = pd.read_csv(csv_path)
-        sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
-        if "sender" in mental_df.columns:
-            mental_df["sender"] = mental_df["sender"].replace(sender_rename)
+    if LOCAL_WORK:
+        csv_path = Path(__file__).parent.parent / "output_data" / "mental" / "group_chat_merged_consecutive_mental_health_scores.csv"
+        try:
+            mental_df = pd.read_csv(csv_path)
+            sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+            if "sender" in mental_df.columns:
+                mental_df["sender"] = mental_df["sender"].replace(sender_rename)
+            return mental_df
+        except Exception:
+            return pd.DataFrame()
+    else:
+        mental_df = fetch_entire_table("mental_data")
+        score_cols = [col for col in mental_df.columns if "_score" in col]
+
+        for col in score_cols:
+            try:
+                mental_df[col] = pd.to_numeric(mental_df[col], errors="raise")
+            except ValueError:
+                pass
+
         return mental_df
-    except Exception:
-        return pd.DataFrame()
 
 @st.cache_data
 def upload_topic_results() -> pd.DataFrame:
-    csv_path = Path(__file__).parent.parent / "output_data" / "topic" / "topic_consecutive.csv"
-    try:
-        topic_df = pd.read_csv(csv_path)
-        sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
-        if "sender" in topic_df.columns:
-            topic_df["sender"] = topic_df["sender"].replace(sender_rename)
+    if LOCAL_WORK:
+        csv_path = Path(__file__).parent.parent / "output_data" / "topic" / "topic_consecutive.csv"
+        try:
+            topic_df = pd.read_csv(csv_path)
+            sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+            if "sender" in topic_df.columns:
+                topic_df["sender"] = topic_df["sender"].replace(sender_rename)
+            return topic_df
+        except Exception:
+            return pd.DataFrame()
+    else:
+        topic_df = fetch_entire_table("topic_data")
+        if "topic" in topic_df.columns:
+            topic_df["topic"] = topic_df["topic"].astype(int)  # ensure topic column is int for filtering outliers
         return topic_df
-    except Exception:
-        return pd.DataFrame()
 
 
 def _aggregate_mental_health_daily(df: pd.DataFrame) -> pd.DataFrame:
