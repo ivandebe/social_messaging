@@ -140,3 +140,4 @@ __marimo__/
 *.csv
 /input_data/
 /output_data/
+/experiments/
