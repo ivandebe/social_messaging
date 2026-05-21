@@ -1,16 +1,26 @@
-import streamlit as st
 from pathlib import Path
+import sys
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+
+import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import timedelta
 
+# local imports
 from utils.messages_dual_radial_bars import create_messages_dual_radial_bars
 from utils.sentiment_heatmap import plot_sentiment_heatmap
 from utils.read_from_postgres import fetch_entire_table
 
 # Debug variables
 LOCAL_WORK = False
+
+
 # -------------------------
 # Authentication section
 # -------------------------
@@ -419,7 +429,13 @@ def main():
         else:
             filtered_df = topic_df.copy()
 
-            show_outliers = st.checkbox("Include outliers", value=False)
+            st.write("Topic analysis view allows you to explore the identified topics in the messages. " \
+            "It uses BERTopic modeling, a modern topic modeling technique that leverages transformer embeddings (such as BERT) and class-based TF-IDF (c-TF-IDF) to create dense, semantically meaningful clusters from text data. " \
+            "BERTopic uses pre-trained language models to generate dense vector representations that capture the contextual meaning of documents. " 
+            "The c-TF-IDF component helps to identify the most relevant words for each topic by calculating term importance within the context of the identified clusters. "
+            )
+
+            show_outliers = st.checkbox("Include outliers", value=False, help="Outliers are messages that did not fit well into any topic (topic = -1). They may be less coherent but can sometimes contain interesting or unique content.")
             if not show_outliers:
                 filtered_df = filtered_df[filtered_df["topic"] != -1]
 
@@ -594,13 +610,8 @@ def main():
             )
 
 
-            # st.subheader("Topic label selector")
-            # selected_topics = st.sidebar.multiselect(
-            #     "Topic label",
-            #     options=topic_options,
-            #     default=topic_options[:10] if len(topic_options) > 10 else topic_options,
-            #     help="Filter messages by topic label. Showing top 10 most frequent topics by default."
-            #     )
+            st.subheader("Topic label search")
+            st.write("Search for specific words in the topic labels to find relevant messages.")
 
             topic_query = st.text_input("Topic messages", "")
             if st.button("Search topic"):
@@ -874,7 +885,33 @@ def main():
                         st.warning("No emotion score columns were found in the sentiment data to build the Emotion Analysis radar chart.")
     elif choice == "Mental health analysis":
         st.header("Mental health analysis")
+        st.write(
+            "This section presents the mental health analysis. It uses **ethandavey/mental-health-diagnosis-bert**, a fine-tuned *Bio_ClinicalBERT* model designed to predict mental health diagnoses from patient statements. "
+            "It classifies text into five categories: Anxiety, Depression, Suicidal, Stress, and Normal. Suicidal has been removed from this analysis. "
+            "The model outputs a probability-like score for each category for each message. "
+            "The daily mental health summary aggregates these predictions to show trends over time, while the message-level drilldown allows you to inspect individual predictions in detail. "
+        )
+        st.warning(
+            "Mental health predictions are based on a machine learning model trained on short texts. It should be interpreted with caution. "
+            "The model **CANNOT** diagnose mental health conditions, it only provides predictions based on patterns in the text data. " \
+            "In other words, it can recognise linguistic cues that may be associated with certain mental health states. "
+        )
 
+        with st.expander("Model details and limitations", expanded=False):
+            st.markdown("""
+        1. **Data bias:** Training data may over-represent some groups and under-represent others, which can reduce accuracy.
+
+        2. **Language nuance:** The model may misread sarcasm, irony, slang, or fragmented writing.
+
+        3. **Limited context:** It only analyzes text, so it misses important clinical cues like tone, behavior, and history.
+
+        4. **Diagnostic overlap:** Mental health conditions can share symptoms, which may lead to misclassification.
+
+        5. **Lack Clinical Validation:** Training data based on self-reported diagnoses or social media posts lacks the rigor of clinical validation
+        """)
+
+
+            
         if mental_df.empty:
             st.error(
                 "Could not load mental health results from `output_data/mental/group_chat_merged_consecutive_mental_health_scores.csv`. "
