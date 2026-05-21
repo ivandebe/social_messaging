@@ -7,8 +7,8 @@ import torch.nn.functional as F
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 DEFAULT_MODEL_NAME = "ethandavey/mental-health-diagnosis-bert"
-DEFAULT_INPUT_FILE = Path("output_data/prep_logs/group_chat_merged_consecutive.csv")
-DEFAULT_OUTPUT_FILE = Path("output_data/mental/group_chat_merged_consecutive_mental_health_scores.csv")
+DEFAULT_INPUT_FILE = Path("output_data/prep_logs/history_consecutive.csv")
+DEFAULT_OUTPUT_FILE = Path("output_data/mental/mental_consecutive.csv")
 DEFAULT_TEXT_COLUMN = "message"
 
 MENTAL_HEALTH_LABELS = {
@@ -176,6 +176,9 @@ def main() -> None:
 
     print(f"Loading input file: {input_file}")
     df = load_dataframe(input_file)
+
+    input_cols = [col for col in df.columns if col in ["message", "sender", "date", "time", "timestamp"]]
+    df=df[input_cols]
 
     print(f"Scoring {len(df)} rows with model {args.model}")
     scored_df = add_mental_health_scores(

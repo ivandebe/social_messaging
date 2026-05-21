@@ -7,8 +7,8 @@ from transformers import pipeline
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 
-DEFAULT_INPUT_FILE = "group_chat_merged_consecutive.csv"
-DEFAULT_OUTPUT_FILENAME = "sentiment_analysis_results_consecutive.csv"
+DEFAULT_INPUT_FILE = "history_consecutive.csv"
+DEFAULT_OUTPUT_FILENAME = "sentiment_consecutive.csv"
 
 
 def apply_vader_sentiment(data: pd.DataFrame, text_column: str = "message") -> pd.DataFrame:
@@ -299,6 +299,10 @@ def main() -> None:
     
     print(f"Reading input from: {input_file}")
     data = pd.read_csv(input_file)
+
+    input_cols = [col for col in data.columns if col in ["message", "sender", "date", "time", "timestamp"]]
+    data=data[input_cols]
+    
     print(f"Loaded {len(data)} messages.")
     
     if not args.skip_vader:

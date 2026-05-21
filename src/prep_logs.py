@@ -49,6 +49,9 @@ SYSTEM_MESSAGE_PATTERNS = [
 
 URL_PATTERN = r"(https?://[^\s]+|www\.[^\s]+)"
 
+EMOJI_PATTERN = re.compile("[" + "".join(emoji.EMOJI_DATA.keys()) + "]")
+
+
 def extract_urls_to_column(data: pd.DataFrame) -> pd.DataFrame:
     df = data.copy()
 
@@ -65,7 +68,7 @@ def extract_urls_to_column(data: pd.DataFrame) -> pd.DataFrame:
 
 def renaming_values(data: pd.DataFrame) -> pd.DataFrame:
     """Standardize sender names in the DataFrame."""
-    renaming_mapping = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+    renaming_mapping = {"IvanDB": "Ivan", "Richard Mcbride": "Richard"}
     data["sender"] = data["sender"].replace(renaming_mapping)
     return data
 
@@ -97,7 +100,10 @@ def extract_emoji_to_column(data: pd.DataFrame) -> pd.DataFrame:
     msg = df["message"].fillna("").astype(str)
 
     # Convert emojis to text, e.g. "I am happy 😊" -> "I am happy smiling_face_with_smiling_eyes"
-    df["emoji_list"] = msg.apply(lambda x: emoji.emoji_list(x))
+
+    df["emoji_list"] = msg.apply(
+        lambda x: [item["emoji"] for item in emoji.emoji_list(x)]
+    )
 
     # Raw emoji features
     df["emoji_count"] = msg.apply(lambda x: emoji.emoji_count(x))
@@ -112,8 +118,14 @@ def clean_message_content(data: pd.DataFrame, lowercase: bool = True,keep_placeh
     df["message"] = df["message"].astype("string")
 
     # replace emojis with text descriptions to preserve sentiment information
+    # df["message"] = df["message"].astype(str).apply(
+    #     lambda x: emoji.demojize(x, delimiters=(" ", " "))
+    # )
+
+    # remove all emojis from the text
+   
     df["message"] = df["message"].astype(str).apply(
-        lambda x: emoji.demojize(x, delimiters=(" ", " "))
+        lambda x: EMOJI_PATTERN.sub("", x)
     )
 
     # Drop missing before string ops accumulate junk
@@ -294,8 +306,8 @@ def chunk_messages_by_token_limit(
                     {
                         "sender": sender,
                         "date": date,
-                        "chunk": " ".join(current_chunk),
-                        "messages_in_chunk": len(current_chunk),
+                        "message": " ".join(current_chunk),
+                        "number_of_interactions": len(current_chunk),
                         "token_count": current_tokens,
                     }
                 )
@@ -307,14 +319,14 @@ def chunk_messages_by_token_limit(
                 {
                     "sender": sender,
                     "date": date,
-                    "chunk": " ".join(current_chunk),
-                    "messages_in_chunk": len(current_chunk),
+                    "message": " ".join(current_chunk),
+                    "number_of_interactions": len(current_chunk),
                     "token_count": current_tokens,
                 }
             )
 
     chunked_df = pd.DataFrame(chunked_data)
-    chunked_df = chunked_df.dropna(subset=["chunk"]).reset_index(drop=True)
+    chunked_df = chunked_df.dropna(subset=["message"]).reset_index(drop=True)
     return chunked_df
 
 
@@ -341,6 +353,51 @@ def find_input_file(input_file: Path) -> Path:
     raise FileNotFoundError(
         f"Could not locate the WhatsApp chat file. Checked: {input_file} and {fallback}"
     )
+
+
+def apply_message_pipeline(
+    data: pd.DataFrame,
+    text_col: str = "message",
+) -> pd.DataFrame:
+    """
+    Apply the full text preprocessing pipeline to any dataframe that contains
+    a message-like text column.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input dataframe.
+    text_col : str
+        Name of the text column to preprocess.
+    keep_output_col_name : bool
+        If True, rename the cleaned 'message' column back to text_col
+        when text_col is not 'message'.
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataframe with raw features, cleaned text, URL/emoji features,
+        and clean-text features.
+    """
+    df = data.copy()
+
+    if text_col not in df.columns:
+        raise KeyError(f"Column '{text_col}' not found in dataframe.")
+
+    # Standardize pipeline input so downstream functions can keep using 'message'
+    if text_col != "message":
+        df = df.rename(columns={text_col: "message"})
+
+    df["message_raw"] = df["message"]
+
+    df = extract_urls_to_column(df)
+    df = extract_emoji_to_column(df)
+    df = add_raw_message_features(df)
+    df = clean_message_content(df)
+    df = add_clean_message_features(df)
+
+    return df
+
 
 
 def main() -> None:
@@ -376,27 +433,29 @@ def main() -> None:
     output_dir = ensure_output_dir(root / "output_data" / args.output_subfolder)
 
     print(f"Reading chat file from: {input_file}")
-    data = parse_whatsapp_chat(input_file)
-    print(f"Parsed {len(data)} messages.")
+    raw_data = parse_whatsapp_chat(input_file)
+    print(f"Parsed {len(raw_data)} messages.")
 
-    data["message_raw"] = data["message"]
-    data = extract_urls_to_column(data)
-    data = extract_emoji_to_column(data)
-    data = add_raw_message_features(data)
-    data = clean_message_content(data)
-    data = add_clean_message_features(data)
+    raw_data = renaming_values(raw_data)
 
-    data = renaming_values(data)
+    # 1) Single-message history
+    history_single = apply_message_pipeline(raw_data, text_col="message")
 
-    chunked_data = chunk_messages_by_token_limit(
-        data,
+    # 2) Consecutive-message history
+    history_consecutive = merge_consecutive_messages(raw_data)
+    history_consecutive = apply_message_pipeline(history_consecutive, text_col="message")
+
+    # 3) Chunked-message history
+    history_chunks = chunk_messages_by_token_limit(
+        raw_data,
         tokenizer_name=args.tokenizer,
         max_chunk_size=args.max_chunk_size,
     )
+    history_chunks = apply_message_pipeline(history_chunks, text_col="message")
 
-    cleaned_path = save_dataframe(data, output_dir, "history_single.csv")
-    merged_path = save_dataframe(merge_consecutive_messages(data), output_dir, "history_consecutive.csv")
-    chunked_path = save_dataframe(chunked_data, output_dir, "history_chunks.csv")
+    cleaned_path = save_dataframe(history_single, output_dir, "history_single.csv")
+    merged_path = save_dataframe(history_consecutive, output_dir, "history_consecutive.csv")
+    chunked_path = save_dataframe(history_chunks, output_dir, "history_chunks.csv")
 
     print(f"Saved cleaned messages to: {cleaned_path}")
     print(f"Saved merged messages to: {merged_path}")

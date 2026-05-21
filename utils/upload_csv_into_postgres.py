@@ -10,7 +10,12 @@ from psycopg import sql
 load_dotenv()
 
 POSTGRES_CONN_STRING = os.getenv("POSTGRES_CONN_STRING")
-CSV_FOLDER = Path("./data_injection/data_to_upload")  # folder containing input CSVs
+CSV_FILE_PATHS = [
+    "./output_data/prep_logs/history_consecutive.csv",
+    "./output_data/topic/topic_consecutive.csv",
+    "./output_data/mental/mental_consecutive.csv",
+    "./output_data/sentiment/sentiment_consecutive.csv"
+]  # list of input CSV file paths
 
 if not POSTGRES_CONN_STRING:
     raise ValueError("POSTGRES_CONN_STRING not found in .env")
@@ -72,10 +77,13 @@ def load_csv_to_table(conn, csv_path: Path, table_name: str, columns: list[str])
 
 
 def main():
-    csv_files = sorted(CSV_FOLDER.glob("*.csv"))
+    csv_files = [Path(path_str) for path_str in CSV_FILE_PATHS]
 
-    if not csv_files:
-        print(f"No CSV files found in: {CSV_FOLDER.resolve()}")
+    missing_files = [str(path) for path in csv_files if not path.is_file()]
+    if missing_files:
+        print("These CSV files were not found:")
+        for path in missing_files:
+            print(f"- {path}")
         return
 
     with psycopg.connect(POSTGRES_CONN_STRING) as conn:

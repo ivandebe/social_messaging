@@ -12,7 +12,7 @@ from bertopic import BERTopic
 from sklearn.feature_extraction.text import CountVectorizer
 
 
-DEFAULT_INPUT_FILE = Path("output_data/prep_logs/group_chat_merged_consecutive.csv")
+DEFAULT_INPUT_FILE = Path("output_data/prep_logs/history_consecutive.csv")
 DEFAULT_OUTPUT_FILE = Path("output_data/topic/topic_consecutive.csv")
 
 
@@ -108,12 +108,45 @@ def build_topic_model(
     return model
 
 
+def _normalize_topic_phrase(phrase: str) -> str:
+    """
+    Normalize a topic phrase for duplicate detection.
+    Example:
+        'eyes smiling_face_with_heart' -> 'eyes smiling face with heart'
+    """
+    phrase = phrase.lower().replace("_", " ").strip()
+    phrase = re.sub(r"\s+", " ", phrase)
+    return phrase
+
+
+def _canonical_bow_key(phrase: str) -> tuple[str, ...]:
+    """
+    Build a canonical bag-of-words key so phrases with same words in different
+    order collapse together.
+    Example:
+        'eyes smiling face with heart'
+        'smiling face with heart eyes'
+    both -> ('eyes', 'face', 'heart', 'smiling', 'with')
+    """
+    tokens = _normalize_topic_phrase(phrase).split()
+    return tuple(sorted(tokens))
+
+
+def _shorten_emoji_like_phrase(phrase: str) -> str:
+    """
+    Make emoji-style topic labels shorter and more readable.
+    Example:
+        'smiling_face_with_heart_eyes' -> 'smiling face heart eyes'
+    """
+    phrase = phrase.replace("_", " ")
+    phrase = re.sub(r"\bwith\b", " ", phrase)
+    phrase = re.sub(r"\s+", " ", phrase).strip()
+    return phrase
+
+
 def get_topic_label_map(topic_model: BERTopic) -> dict[int, str]:
     """
-    Build a mapping from topic id to a readable topic label.
-
-    Example label:
-        "pizza, dinner, tonight, order, food"
+    Build a mapping from topic id to a shorter, more readable topic label.
     """
     topic_info = topic_model.get_topic_info()
     topic_label_map: dict[int, str] = {}
@@ -126,11 +159,29 @@ def get_topic_label_map(topic_model: BERTopic) -> dict[int, str]:
             continue
 
         topic_words = topic_model.get_topic(topic_id)
-        if topic_words:
-            label = ", ".join(word for word, _ in topic_words[:5])
-        else:
-            label = f"topic_{topic_id}"
+        if not topic_words:
+            topic_label_map[topic_id] = f"topic_{topic_id}"
+            continue
 
+        raw_terms = [word for word, _ in topic_words[:10]]
+
+        # 1) remove exact duplicates preserving order
+        dedup_terms = list(dict.fromkeys(raw_terms))
+
+        # 2) remove near-duplicates based on same bag-of-words
+        selected_terms = []
+        seen_keys = set()
+
+        for term in dedup_terms:
+            bow_key = _canonical_bow_key(term)
+            if bow_key not in seen_keys:
+                seen_keys.add(bow_key)
+                selected_terms.append(term)
+
+        # 3) shorten labels for display
+        display_terms = [_shorten_emoji_like_phrase(term) for term in selected_terms[:5]]
+
+        label = ", ".join(display_terms) if display_terms else f"topic_{topic_id}"
         topic_label_map[topic_id] = label
 
     return topic_label_map
@@ -203,6 +254,10 @@ def main() -> int:
         raise FileNotFoundError(f"Input file does not exist: {input_path}")
 
     df = pd.read_csv(input_path)
+    
+    input_cols = [col for col in df.columns if col in ["message", "sender", "date", "time", "timestamp"]]
+    df=df[input_cols]
+
     validate_input_dataframe(df, message_column)
 
     print(f"Loaded {len(df)} rows.")
