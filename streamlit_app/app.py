@@ -18,6 +18,10 @@ from collections import Counter
 from utils.messages_dual_radial_bars import create_messages_dual_radial_bars
 from utils.sentiment_heatmap import plot_sentiment_heatmap
 from utils.read_from_postgres import fetch_entire_table
+from utils.topic_cooccurrence_plotly import (
+    create_topic_cooccurrence_figure,
+    create_topic_cooccurrence_tables,
+)
 
 # Debug variables
 LOCAL_WORK = False
@@ -814,6 +818,183 @@ def main():
                         )
 
                         st.plotly_chart(fig, width='stretch')
+            
+            # st.subheader("Topic Co-Occurence Graph")
+
+            # fig = create_topic_cooccurrence_figure(
+            #     filtered_df,
+            #     window_mode="count",        # or "time"
+            #     message_window_size=50,     # used if window_mode="count"
+            #     time_window="1D",           # used if window_mode="time"
+            #     min_edge_weight=2,
+            #     max_topics=30,
+            #     exclude_outlier_topic=True,
+            #     title="Topic co-occurrence graph",
+            # )
+
+            # st.plotly_chart(fig, width="stretch")
+
+
+            st.subheader("Topic co-occurrence network")
+
+            with st.expander("Graph settings", expanded=True):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    window_mode = st.radio(
+                        "Window mode",
+                        options=["count", "time"],
+                        horizontal=True,
+                        help="Use fixed message blocks or calendar-based time bins.",
+                    )
+
+                    max_topics = st.slider(
+                        "Top topics to include",
+                        min_value=5,
+                        max_value=100,
+                        value=30,
+                        step=5,
+                        help="Keep only the most frequent topics before building the graph.",
+                    )
+
+                    min_edge_weight = st.slider(
+                        "Minimum edge weight",
+                        min_value=1,
+                        max_value=20,
+                        value=2,
+                        step=1,
+                        help="Only show edges that occur at least this many times.",
+                    )
+
+                    exclude_outlier_topic = st.checkbox(
+                        "Exclude outlier topic (-1)",
+                        value=True,
+                        help="BERTopic usually uses -1 for outlier/unassigned messages.",
+                    )
+
+                with col2:
+                    deduplicate_topics_per_window = st.checkbox(
+                        "Count each topic once per window",
+                        value=True,
+                        help="Prevents repeated messages from the same topic dominating a window.",
+                    )
+
+                    layout_iterations = st.slider(
+                        "Layout iterations",
+                        min_value=20,
+                        max_value=300,
+                        value=100,
+                        step=10,
+                        help="Higher values can improve spacing but may be slower.",
+                    )
+
+                    layout_seed = st.number_input(
+                        "Layout seed",
+                        min_value=0,
+                        max_value=9999,
+                        value=42,
+                        step=1,
+                        help="Use the same seed for reproducible node positions.",
+                    )
+
+                if window_mode == "count":
+                    message_window_size = st.slider(
+                        "Messages per window",
+                        min_value=5,
+                        max_value=500,
+                        value=50,
+                        step=5,
+                        help="Each block of N messages becomes one co-occurrence window.",
+                    )
+                    time_window = "1D"
+                else:
+                    time_window_label = st.selectbox(
+                        "Time window",
+                        options=[
+                            "1 hour",
+                            "6 hours",
+                            "12 hours",
+                            "1 day",
+                            "3 days",
+                            "7 days",
+                            "14 days",
+                            "1 month",
+                        ],
+                        index=3,
+                        help="Messages in the same time bin are treated as co-occurring.",
+                    )
+
+                    TIME_WINDOW_MAP = {
+                        "1 hour": "1H",
+                        "6 hours": "6H",
+                        "12 hours": "12H",
+                        "1 day": "1D",
+                        "3 days": "3D",
+                        "7 days": "7D",
+                        "14 days": "14D",
+                        "1 month": "30D",
+                    }
+                    time_window = TIME_WINDOW_MAP[time_window_label]
+                    message_window_size = 50  # unused in time mode
+
+            show_tables = st.checkbox("Show node and edge tables", value=False)
+
+            # df_topic_filtered should be your already filtered dataframe
+            # expected columns: date, time, sender, message, topic, topic_label
+            topic_graph_df = filtered_df.copy()
+
+            if topic_graph_df.empty:
+                st.info("No data available for the current filters.")
+            else:
+                try:
+                    fig = create_topic_cooccurrence_figure(
+                        topic_graph_df,
+                        window_mode=window_mode,
+                        message_window_size=message_window_size,
+                        time_window=time_window,
+                        deduplicate_topics_per_window=deduplicate_topics_per_window,
+                        min_edge_weight=min_edge_weight,
+                        max_topics=max_topics,
+                        exclude_outlier_topic=exclude_outlier_topic,
+                        layout_seed=int(layout_seed),
+                        layout_iterations=layout_iterations,
+                        title="Topic co-occurrence graph",
+                    )
+
+                    st.plotly_chart(fig, width="stretch")
+
+                    if show_tables:
+                        nodes_df, edges_df = create_topic_cooccurrence_tables(
+                            topic_graph_df,
+                            window_mode=window_mode,
+                            message_window_size=message_window_size,
+                            time_window=time_window,
+                            deduplicate_topics_per_window=deduplicate_topics_per_window,
+                            min_edge_weight=1,
+                            max_topics=max_topics,
+                            exclude_outlier_topic=exclude_outlier_topic,
+                        )
+
+                        st.markdown("### Nodes")
+                        st.dataframe(
+                            nodes_df.sort_values("message_count", ascending=False),
+                            width="stretch",
+                            hide_index=True,
+                        )
+
+                        st.markdown("### Edges")
+                        if not edges_df.empty:
+                            st.dataframe(
+                                edges_df.sort_values("weight", ascending=False),
+                                width="stretch",
+                                hide_index=True,
+                            )
+                        else:
+                            st.info("No edges found for the current settings.")
+
+                except Exception as e:
+                    st.error(f"Could not build topic co-occurrence graph: {e}")
+
 
 
     elif choice == "Sentiment analysis":

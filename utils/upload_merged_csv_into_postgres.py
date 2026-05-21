@@ -2,11 +2,9 @@ import os
 import csv
 from pathlib import Path
 import pandas as pd
-
 from dotenv import load_dotenv
 import psycopg
 from psycopg import sql
-
 
 load_dotenv()
 
@@ -128,30 +126,12 @@ def main():
         columns = read_csv_header(merged_path)
 
         print(f"Processing {merged_path.name} -> table {table_name}")
-
         create_table_if_not_exists(conn, table_name, columns)
 
         # optional: clear table before loading fresh data
         truncate_table(conn, table_name)
-
         load_csv_to_table(conn, merged_path, table_name, columns)
-
         print(f"Loaded {merged_path.name} into {table_name}")
-
-        # for csv_path in csv_files:
-        #     table_name = infer_table_name(csv_path)
-        #     columns = read_csv_header(csv_path)
-
-        #     print(f"Processing {csv_path.name} -> table {table_name}")
-
-        #     create_table_if_not_exists(conn, table_name, columns)
-
-        #     # optional: clear table before loading fresh data
-        #     truncate_table(conn, table_name)
-
-        #     load_csv_to_table(conn, csv_path, table_name, columns)
-
-        #     print(f"Loaded {csv_path.name} into {table_name}")
 
     print("Done.")
 

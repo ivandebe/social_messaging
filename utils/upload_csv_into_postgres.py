@@ -1,11 +1,9 @@
 import os
 import csv
 from pathlib import Path
-
 from dotenv import load_dotenv
 import psycopg
 from psycopg import sql
-
 
 load_dotenv()
 
