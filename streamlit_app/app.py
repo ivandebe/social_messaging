@@ -27,7 +27,7 @@ LOCAL_WORK = False
 
 ALLOWED_EMAILS = {
     email.strip().lower()
-    for email in st.secrets["auth"].get("allowed_emails", [])
+    for email in st.secrets["users_permissions"].get("allowed_emails", [])
 }
 
 def login_screen():
