@@ -11,6 +11,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import timedelta
+import ast
+from collections import Counter
 
 # local imports
 from utils.messages_dual_radial_bars import create_messages_dual_radial_bars
@@ -64,6 +66,26 @@ def upload_history_chat() -> pd.DataFrame:
             return pd.DataFrame()
     else:
         chat_df = fetch_entire_table("history_consecutive")
+
+        numeric_columns = [
+            "has_url",
+            "url_count",
+            "emoji_count",
+            "has_emoji",
+            "char_len_raw",
+            "exclamation_count_raw",
+            "question_count_raw",
+            "ellipsis_count_raw",
+            "uppercase_ratio_raw",
+            "char_len_clean",
+            "word_count_clean",
+        ]
+
+        existing_numeric_cols = [col for col in numeric_columns if col in chat_df.columns]
+        chat_df[existing_numeric_cols] = chat_df[existing_numeric_cols].apply(
+            pd.to_numeric, errors="coerce"
+        )
+
         return chat_df
 
 
@@ -221,6 +243,15 @@ st.set_page_config(page_title="Group Chat Analysis tool", layout="wide")
 # Custom color palette
 CUSTOM_COLORS = ["#dd6e42", "#e8dab2", "#4f6d7a", "#c0d6df"]
 
+SENDER_COLOR_MAP = {
+    "Ivan": CUSTOM_COLORS[0],
+    "Laurent": CUSTOM_COLORS[1],
+    "Nico": CUSTOM_COLORS[2],
+    "Richard": CUSTOM_COLORS[3],
+}
+
+DEFAULT_COLOR = "#999999"
+
 def main():
     st.title("Group Chat Analysis Dashboard")
 
@@ -297,6 +328,13 @@ def main():
 
             if "sender" in df_for_filters.columns:
                 unique_senders = sorted(df_for_filters["sender"].dropna().astype(str).unique())
+
+                # color map by sender
+                color_discrete_map = {
+                    sender: SENDER_COLOR_MAP.get(sender, DEFAULT_COLOR)
+                    for sender in unique_senders
+                }
+
                 if unique_senders:
                     selected_senders = st.multiselect("Select senders", unique_senders, default=unique_senders)
                 else:
@@ -305,7 +343,7 @@ def main():
                 st.warning("No `sender` column found in the available data.")
         # version
         st.divider()
-        st.caption("Version 1.0.2")
+        st.caption("Version 1.0.3")
 
     # Main content - empty placeholders
     if choice == "Explore chat history":
@@ -348,7 +386,7 @@ def main():
                     title="Total messages by sender",
                     labels={"count": "Number of messages", "sender": "Sender"},
                     color="sender",
-                    color_discrete_sequence=CUSTOM_COLORS,
+                    color_discrete_map=color_discrete_map,
                 )
                 fig_bar.update_layout(showlegend=False, height=max(300, len(sender_counts) * 40))
                 st.plotly_chart(fig_bar, width="stretch")
@@ -369,13 +407,125 @@ def main():
                     title="Messages per day by sender",
                     labels={"count": "Number of messages", "date": "Date"},
                     markers=True,
-                    color_discrete_sequence=CUSTOM_COLORS,
+                    color_discrete_map=color_discrete_map,
                 )
                 fig_line.update_layout(hovermode="x unified", height=400)
                 st.plotly_chart(fig_line, width="stretch")
 
             st.write(f"Showing {len(filtered_df)} rows")
             st.dataframe(filtered_df.head(20))
+
+
+            def parse_emoji_list(value):
+                """
+                Safely convert emoji_list values into a Python list.
+                Handles cases where the column contains:
+                - actual Python lists
+                - string representations like "['😂', '🔥']"
+                - empty values
+                """
+                if isinstance(value, list):
+                    return value
+                if pd.isna(value) or value == "":
+                    return []
+                if isinstance(value, str):
+                    try:
+                        parsed = ast.literal_eval(value)
+                        return parsed if isinstance(parsed, list) else []
+                    except Exception:
+                        return []
+                return []
+
+            def most_used_emoji_for_sender(series):
+                all_emojis = []
+                for item in series:
+                    all_emojis.extend(parse_emoji_list(item))
+                if not all_emojis:
+                    return "—"
+                return Counter(all_emojis).most_common(1)[0][0]
+
+            sender_metrics = (
+                filtered_df.groupby("sender")
+                .agg(
+                    total_number_of_emojis=("emoji_count", "sum"),
+                    average_message_length=("char_len_clean", "mean"),
+                    total_number_of_questions=("question_count_raw", "sum"),
+                )
+                .reset_index()
+            )
+
+            most_used = (
+                filtered_df.groupby("sender")["emoji_list"]
+                .apply(most_used_emoji_for_sender)
+                .reset_index(name="most_used_emoji")
+            )
+
+            sender_metrics = sender_metrics.merge(most_used, on="sender", how="left")
+
+            # Optional formatting
+            sender_metrics["average_message_length"] = sender_metrics["average_message_length"].round(1)
+
+            # Display: 4 metrics per sender
+            st.subheader("Sender metrics")
+            for _, row in sender_metrics.iterrows():
+                st.markdown(f"### {row['sender']}")
+                col1, col2, col3, col4 = st.columns(4)
+
+                col1.metric("Most used emoji", row["most_used_emoji"])
+                col2.metric("Total emojis", int(row["total_number_of_emojis"]))
+                col3.metric("Avg message length", row["average_message_length"])
+                col4.metric("Total questions", int(row["total_number_of_questions"]))
+
+            st.subheader("Emoji Frequency")
+
+
+            # def parse_emoji_list(value):
+            #     if isinstance(value, list):
+            #         return value
+            #     if pd.isna(value) or value == "":
+            #         return []
+            #     if isinstance(value, str):
+            #         try:
+            #             parsed = ast.literal_eval(value)
+            #             return parsed if isinstance(parsed, list) else []
+            #         except Exception:
+            #             return []
+            #     return []
+
+            # Assuming chat_df is already loaded
+            # chat_df = fetch_entire_table("history_consecutive")
+
+            all_emojis = []
+            for item in filtered_df["emoji_list"]:
+                all_emojis.extend(parse_emoji_list(item))
+
+            emoji_counts = Counter(all_emojis)
+            top_10_emojis = emoji_counts.most_common(10)
+
+            emoji_freq_df = pd.DataFrame(top_10_emojis, columns=["emoji", "count"])
+            emoji_freq_df = emoji_freq_df.sort_values("count", ascending=True)
+
+            fig = px.bar(
+                emoji_freq_df,
+                x="count",
+                y="emoji",
+                orientation="h",
+                text="count",
+                title="Top 10 Most Used Emojis Overall",
+                color="count",
+                
+            )
+
+            fig.update_traces(textposition="outside")
+            fig.update_layout(
+                xaxis_title="Frequency",
+                yaxis_title="Emoji",
+                height=500,
+                showlegend=False,
+                margin=dict(l=20, r=20, t=60, b=20)
+            )
+
+            st.plotly_chart(fig, width="stretch")
 
             st.subheader("Search messages by exact word or phrase")
             search_query = st.text_input("Search messages", "")
@@ -646,7 +796,8 @@ def main():
                             values="count",
                             title="Topic frequency by sender",
                             hole=0.45,
-                            color_discrete_sequence=CUSTOM_COLORS
+                            color="sender",
+                            color_discrete_map=color_discrete_map,
                         )
 
                         fig.update_traces(
