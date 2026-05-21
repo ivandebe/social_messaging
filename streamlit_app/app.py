@@ -56,13 +56,10 @@ st.sidebar.divider()
 @st.cache_data
 def upload_history_chat() -> pd.DataFrame:
     if LOCAL_WORK:
-        csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "group_chat_merged_consecutive.csv"
-        # csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "chunked_data.csv"
+        csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "history_consecutive.csv"
+        # csv_path = Path(__file__).parent.parent / "output_data" / "prep_logs" / "history_chunks.csv"
         try:
             chat_df = pd.read_csv(csv_path)
-            sender_rename = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
-            if "sender" in chat_df.columns:
-                chat_df["sender"] = chat_df["sender"].replace(sender_rename)
             if "chunk" in chat_df.columns:
                 chat_df = chat_df.rename(columns={"chunk": "message"})
             return chat_df

@@ -1,6 +1,7 @@
 import argparse
 import re
 from pathlib import Path
+import emoji
 
 import pandas as pd
 from transformers import AutoTokenizer
@@ -10,6 +11,189 @@ DEFAULT_INPUT_FILE = Path(__file__).resolve().parents[1] / "input_data" / "group
 DEFAULT_OUTPUT_SUBFOLDER = "prep_logs"
 DEFAULT_MAX_CHUNK_SIZE = 512
 DEFAULT_TOKENIZER = "bert-base-uncased"
+
+CHAT_SLANG = {
+    "idk": "i do not know",
+    "imo": "in my opinion",
+    "imho": "in my humble opinion",
+    "omg": "oh my god",
+    "wtf": "what the fuck",
+    "btw": "by the way",
+    "lol": "laugh",
+    "lmao": "laugh",
+    "rofl": "laugh",
+    "u": "you",
+    "ur": "your",
+    "tmrw": "tomorrow",
+    "thx": "thanks",
+    "pls": "please",
+    "pls.": "please",
+}
+
+SYSTEM_MESSAGE_PATTERNS = [
+    r"messages and calls are end-to-end encrypted",
+    r"you deleted this message",
+    r"this message was deleted",
+    r"missed voice call",
+    r"missed video call",
+    r"image omitted",
+    r"video omitted",
+    r"gif omitted",
+    r"sticker omitted",
+    r"document omitted",
+    r"audio omitted",
+    r"location omitted",
+    r"contact card omitted",
+    r"live location shared",
+]
+
+URL_PATTERN = r"(https?://[^\s]+|www\.[^\s]+)"
+
+def extract_urls_to_column(data: pd.DataFrame) -> pd.DataFrame:
+    df = data.copy()
+
+    msg = df["message"].fillna("").astype(str)
+
+    df["urls"] = msg.apply(lambda x: re.findall(URL_PATTERN, x))
+    df["has_url"] = df["urls"].apply(lambda x: int(len(x) > 0))
+    df["url_count"] = df["urls"].apply(len)
+
+    # Optional: first URL only
+    df["first_url"] = df["urls"].apply(lambda x: x[0] if x else None)
+
+    return df
+
+def renaming_values(data: pd.DataFrame) -> pd.DataFrame:
+    """Standardize sender names in the DataFrame."""
+    renaming_mapping = {"IvanDB": "Ivan", "Richard McBride": "Richard"}
+    data["sender"] = data["sender"].replace(renaming_mapping)
+    return data
+
+def _expand_slang(text: str, slang_map: dict) -> str:
+    tokens = text.split()
+    return " ".join(slang_map.get(tok, tok) for tok in tokens)
+
+def _normalize_laughter(text: str) -> str:
+    text = re.sub(r"\b(?:ha){2,}\b", " laugh ", text, flags=re.I)
+    text = re.sub(r"\b(?:he){2,}\b", " laugh ", text, flags=re.I)
+    text = re.sub(r"\b(?:ja){2,}\b", " laugh ", text, flags=re.I)
+    return text
+
+def _reduce_repetitions(text: str) -> str:
+    text = re.sub(r"(.)\1{2,}", r"\1\1", text)   # sooooo -> soo
+    text = re.sub(r"([!?.,])\1{1,}", r"\1\1", text)  # !!!!! -> !!
+    return text
+
+def _remove_system_messages(text: str) -> str:
+    pattern = r"|".join(f"(?:{p})" for p in SYSTEM_MESSAGE_PATTERNS)
+    return re.sub(pattern, " ", text, flags=re.I)
+
+
+
+def extract_emoji_to_column(data: pd.DataFrame) -> pd.DataFrame:
+
+    df = data.copy()
+
+    msg = df["message"].fillna("").astype(str)
+
+    # Convert emojis to text, e.g. "I am happy 😊" -> "I am happy smiling_face_with_smiling_eyes"
+    df["emoji_list"] = msg.apply(lambda x: emoji.emoji_list(x))
+
+    # Raw emoji features
+    df["emoji_count"] = msg.apply(lambda x: emoji.emoji_count(x))
+    df["has_emoji"] = (df["emoji_count"] > 0).astype(int)
+
+    return df
+
+
+def clean_message_content(data: pd.DataFrame, lowercase: bool = True,keep_placeholders: bool = True,) -> pd.DataFrame:
+    df = data.copy()
+
+    df["message"] = df["message"].astype("string")
+
+    # replace emojis with text descriptions to preserve sentiment information
+    df["message"] = df["message"].astype(str).apply(
+        lambda x: emoji.demojize(x, delimiters=(" ", " "))
+    )
+
+    # Drop missing before string ops accumulate junk
+    df = df[df["message"].notna()].copy()
+
+    # Basic cleanup
+    df["message"] = (
+        df["message"]
+        .str.replace("<Media omitted>", " ", regex=False)
+        .str.replace("\u200e", " ", regex=False)
+        .str.replace("\u200f", " ", regex=False)
+        .str.replace("\ufeff", " ", regex=False)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+
+    # Remove WhatsApp / export system noise
+    df["message"] = df["message"].apply(_remove_system_messages)
+
+    # Normalize entities
+    if keep_placeholders:
+        df["message"] = (
+            df["message"]
+            .str.replace(r"https?://\S+|www\.\S+", " <URL> ", regex=True)
+            .str.replace(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", " <EMAIL> ", regex=True)
+            .str.replace(r"\+?\d[\d\-\s\\(\\)]{6,}\d", " <PHONE> ", regex=True)
+            .str.replace(r"\b\d+\b", " <NUM> ", regex=True)
+        )
+    else:
+        df["message"] = (
+            df["message"]
+            .str.replace(r"https?://\S+|www\.\S+", " ", regex=True)
+            .str.replace(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", " ", regex=True)
+            .str.replace(r"\+?\d[\d\-\s\\(\\)]{6,}\d", " ", regex=True)
+            .str.replace(r"\b\d+\b", " ", regex=True)
+        )
+
+    if lowercase:
+        df["message"] = df["message"].str.lower()
+
+    # Chat-specific normalization
+    df["message"] = df["message"].apply(_normalize_laughter)
+    df["message"] = df["message"].apply(_reduce_repetitions)
+    df["message"] = df["message"].apply(lambda x: _expand_slang(x, CHAT_SLANG))
+
+    # Final whitespace cleanup
+    df["message"] = (
+        df["message"]
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
+
+    # Drop empty rows
+    df = df[df["message"].ne("")].reset_index(drop=True)
+
+    return df
+
+
+def add_raw_message_features(data: pd.DataFrame) -> pd.DataFrame:
+    df = data.copy()
+    msg = df["message_raw"].fillna("").astype(str)
+
+    df["char_len_raw"] = msg.str.len()
+    df["exclamation_count_raw"] = msg.str.count(r"!")
+    df["question_count_raw"] = msg.str.count(r"\?")
+    df["ellipsis_count_raw"] = msg.str.count(r"\.\.\.")
+    df["uppercase_ratio_raw"] = msg.apply(
+        lambda x: sum(c.isupper() for c in x) / max(sum(c.isalpha() for c in x), 1)
+    )
+
+    return df
+
+def add_clean_message_features(data: pd.DataFrame) -> pd.DataFrame:
+    df = data.copy()
+    msg = df["message"].fillna("").astype(str)
+
+    df["char_len_clean"] = msg.str.len()
+    df["word_count_clean"] = msg.str.split().str.len()
+
+    return df
 
 
 def parse_whatsapp_chat(file_path: Path) -> pd.DataFrame:
@@ -45,12 +229,6 @@ def parse_whatsapp_chat(file_path: Path) -> pd.DataFrame:
         messages.append(current_message)
 
     data = pd.DataFrame(messages)
-    data["message"] = (
-        data["message"]
-        .astype(str)
-        .replace(r"<Media omitted>", "", regex=True)
-        .str.strip()
-    )
     data = data[data["message"].notna() & (data["message"] != "")].reset_index(drop=True)
 
     return data
@@ -201,15 +379,24 @@ def main() -> None:
     data = parse_whatsapp_chat(input_file)
     print(f"Parsed {len(data)} messages.")
 
+    data["message_raw"] = data["message"]
+    data = extract_urls_to_column(data)
+    data = extract_emoji_to_column(data)
+    data = add_raw_message_features(data)
+    data = clean_message_content(data)
+    data = add_clean_message_features(data)
+
+    data = renaming_values(data)
+
     chunked_data = chunk_messages_by_token_limit(
         data,
         tokenizer_name=args.tokenizer,
         max_chunk_size=args.max_chunk_size,
     )
 
-    cleaned_path = save_dataframe(data, output_dir, "group_chat_cleaned_single.csv")
-    merged_path = save_dataframe(merge_consecutive_messages(data), output_dir, "group_chat_merged_consecutive.csv")
-    chunked_path = save_dataframe(chunked_data, output_dir, "chunked_data.csv")
+    cleaned_path = save_dataframe(data, output_dir, "history_single.csv")
+    merged_path = save_dataframe(merge_consecutive_messages(data), output_dir, "history_consecutive.csv")
+    chunked_path = save_dataframe(chunked_data, output_dir, "history_chunks.csv")
 
     print(f"Saved cleaned messages to: {cleaned_path}")
     print(f"Saved merged messages to: {merged_path}")
